@@ -87,8 +87,19 @@ EOF
     return 0
 }
 
+packer_sync () {
+    nvim --headless -c "autocmd User PackerComplete quitall" -c "PackerSync"
+}
 
+call_lua_function () {
+    local lua_function="$1"
+    nvim --headless -c "lua $lua_function()" -c "quitall"
+}
 
+nvim_source_lua_file () {
+    local filepath="$1"
+    nvim --headless -c "luafile $filepath" +qa
+}
 # Install NeoVim
 
 # export PATH="$HOME/.local/bin:$PATH"
@@ -155,8 +166,13 @@ REMAP_FILEPATH="$LUA_SUB_DIRECTORY/remap.lua"
 PACKER_FILEPATH="$LUA_SUB_DIRECTORY/packer.lua"
 
 TELESCOPE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/telescope.lua"
+HARPOON_FILEPATH="$AFTER_PLUGIN_DIRECTORY/harpoon.lua"
+UNDOTREE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/undotree.lua"
+FUGITIVE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/fugitive.lua"
 
-for i in $BASE_LUA_FILEPATH $SUB_LUA_FILEPATH $REMAP_FILEPATH $PACKER_FILEPATH $AFTER_INIT_LUA_FILEPATH $TELESCOPE_FILEPATH
+for i in $BASE_LUA_FILEPATH $SUB_LUA_FILEPATH $REMAP_FILEPATH \
+$PACKER_FILEPATH $AFTER_INIT_LUA_FILEPATH $TELESCOPE_FILEPATH $HARPOON_FILEPATH \
+$UNDOTREE_FILEPATH
 do
     create_fresh_file $i
 done
@@ -188,14 +204,14 @@ fi
 git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
 
 
-CONTENT="-- This file can be loaded by calling \`lua require('plugins')\` from your init.vim
+CONTENT="
+-- This file can be loaded by calling \`lua require('plugins')\` from your init.vim
 -- Only required if you have packer configured as \`opt\`
 vim.cmd [[packadd packer.nvim]]
 
 return require('packer').startup(function(use)
 
-    -- Packer can manage itself
-    use 'wbthomason/packer.nvim'
+    use('wbthomason/packer.nvim')
 
     use {
     'nvim-telescope/telescope.nvim', tag = '0.1.8',
@@ -213,19 +229,22 @@ return require('packer').startup(function(use)
 
     use('nvim-treesitter/nvim-treesitter', {run = ':TSUpdate'})
     use('nvim-treesitter/playground')
+    use('theprimeagen/harpoon')
+    use('mbbill/undotree')
+    use('tpope/vim-fugitive')
 
 end)"
 
 add_to_file $PACKER_FILEPATH "$CONTENT"
 add_to_file $BASE_LUA_FILEPATH "require(\"$SUB_LUA_DIR_NAME.packer\")"
 
-nvim --headless -c "autocmd User PackerComplete quitall" -c "PackerSync"
+packer_sync
 ###############################################################################
 ###############################################################################
 ###############################################################################
 
 ###############################################################################
-################################ Telescope install ############################
+################################# Telescope Config ############################
 ###############################################################################
 add_to_file $TELESCOPE_FILEPATH "local builtin = require('telescope.builtin')"
 add_to_file $TELESCOPE_FILEPATH "vim.keymap.set('n', '<leader>pf', builtin.find_files, { desc = 'Telescope find files' })"
@@ -241,7 +260,7 @@ add_to_file $TELESCOPE_FILEPATH "$CONTENT"
 ###############################################################################
 
 ###############################################################################
-################################### colours.lua ###############################
+################################# Colour Config ###############################
 ###############################################################################
 COLOURS_LUA_FILEPATH="$AFTER_PLUGIN_DIRECTORY/colours.lua"
 
@@ -274,12 +293,11 @@ add_to_file $COLOURS_LUA_FILEPATH "$CONTENT"
 ###############################################################################
 ###############################################################################
 ###############################################################################
-
-nvim --headless -c "autocmd User PackerComplete quitall" -c "PackerSync"
-nvim --headless -c "lua ColourMyPencils()" -c "quitall"
+packer_sync
+call_lua_function "ColourMyPencils"
 
 ###############################################################################
-################################### Treesitter ################################
+############################ Treesitter Config ################################
 ###############################################################################
 
 TREESITTER_LUA_FILEPATH=$AFTER_PLUGIN_DIRECTORY/treesitter.lua
@@ -289,18 +307,13 @@ LANG_FILE="./treesitter_language_flags.ini"
 
 lua_content="local language_flags = {
 "
-
 while IFS='=' read -r key value; do
     lua_content+="    $key = $value,
     "
-
 done < "$LANG_FILE"
-
-# Close the Lua table
 lua_content+="}"
 
 CONTENT="
-
 $lua_content
 
 local ensure_list = {}
@@ -324,19 +337,52 @@ require'nvim-treesitter.configs'.setup {
 
   highlight = {
     enable = true,
-
-    -- Setting this to true will run \`:h syntax\` and tree-sitter at the same time.
-    -- Set this to \`true\` if you depend on 'syntax' being enabled (like for indentation).
-    -- Using this option may slow down your editor, and you may see some duplicate highlights.
-    -- Instead of true it can also be a list of languages
-    additional_vim_regex_highlighting = false,
   },
 }
 "
 
 add_to_file $TREESITTER_LUA_FILEPATH "$CONTENT"
+
+nvim_source_lua_file "$TREESITTER_LUA_FILEPATH"
 ###############################################################################
 ###############################################################################
 ###############################################################################
 
-nvim --headless -c "luafile $TREESITTER_LUA_FILEPATH" +qa
+###############################################################################
+############################# Harpoon Config ##################################
+###############################################################################
+add_to_file $HARPOON_FILEPATH "local mark = require('harpoon.mark')"
+add_to_file $HARPOON_FILEPATH "local ui = require('harpoon.ui')"
+
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<leader>a\", mark.add_file)"
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<C-e>\", ui.toggle_quick_menu)"
+
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<C-h>\", function() ui.nav_file(1) end)"
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<C-t>\", function() ui.nav_file(2) end)"
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<C-n>\", function() ui.nav_file(3) end)"
+add_to_file $HARPOON_FILEPATH "vim.keymap.set(\"n\", \"<C-s>\", function() ui.nav_file(4) end)"
+
+nvim_source_lua_file "$HARPOON_FILEPATH"
+###############################################################################
+###############################################################################
+###############################################################################
+
+###############################################################################
+############################ Undotree Config ##################################
+###############################################################################
+add_to_file $UNDOTREE_FILEPATH "vim.keymap.set(\"n\", \"<leader>u\", vim.cmd.UndotreeToggle)"
+
+nvim_source_lua_file "$UNDOTREE_FILEPATH"
+###############################################################################
+###############################################################################
+###############################################################################
+
+###############################################################################
+############################ Undotree Config ##################################
+###############################################################################
+add_to_file $FUGITIVE_FILEPATH "vim.keymap.set(\"n\", \"<leader>gs\", vim.cmd.Git)"
+
+nvim_source_lua_file "$FUGITIVE_FILEPATH"
+###############################################################################
+###############################################################################
+###############################################################################
