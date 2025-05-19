@@ -169,10 +169,11 @@ TELESCOPE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/telescope.lua"
 HARPOON_FILEPATH="$AFTER_PLUGIN_DIRECTORY/harpoon.lua"
 UNDOTREE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/undotree.lua"
 FUGITIVE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/fugitive.lua"
+LSP_FILEPATH="$AFTER_PLUGIN_DIRECTORY/lsp.lua"
 
 for i in $BASE_LUA_FILEPATH $SUB_LUA_FILEPATH $REMAP_FILEPATH \
 $PACKER_FILEPATH $AFTER_INIT_LUA_FILEPATH $TELESCOPE_FILEPATH $HARPOON_FILEPATH \
-$UNDOTREE_FILEPATH
+$UNDOTREE_FILEPATH $LSP_FILEPATH
 do
     create_fresh_file $i
 done
@@ -232,6 +233,39 @@ return require('packer').startup(function(use)
     use('theprimeagen/harpoon')
     use('mbbill/undotree')
     use('tpope/vim-fugitive')
+
+    use {'neovim/nvim-lspconfig', tag = 'v0.1.7'}
+    use {
+        'williamboman/mason.nvim', 
+        tag = 'v1.8.1',
+    }
+    use {
+        'williamboman/mason-lspconfig.nvim', 
+        branch = 'v1.x',
+        requires = {
+            'williamboman/mason.nvim',
+        },
+    }
+
+
+    use {
+        'VonHeikemen/lsp-zero.nvim',
+        branch = 'v1.x',
+        requires = {
+
+            -- Autocompletion
+            {'hrsh7th/nvim-cmp'},         -- Required
+            {'hrsh7th/cmp-nvim-lsp'},     -- Required
+            {'hrsh7th/cmp-buffer'},       -- Optional
+            {'hrsh7th/cmp-path'},         -- Optional
+            {'saadparwaiz1/cmp_luasnip'}, -- Optional
+            {'hrsh7th/cmp-nvim-lua'},     -- Optional
+
+            -- Snippets
+            {'L3MON4D3/LuaSnip'},             -- Required
+            {'rafamadriz/friendly-snippets'}, -- Optional
+        }
+    }
 
 end)"
 
@@ -378,11 +412,73 @@ nvim_source_lua_file "$UNDOTREE_FILEPATH"
 ###############################################################################
 
 ###############################################################################
-############################ Undotree Config ##################################
+############################ Fugitive Config ##################################
 ###############################################################################
 add_to_file $FUGITIVE_FILEPATH "vim.keymap.set(\"n\", \"<leader>gs\", vim.cmd.Git)"
 
 nvim_source_lua_file "$FUGITIVE_FILEPATH"
 ###############################################################################
 ###############################################################################
+###############################################################################
+CONTENT="
+local lsp = require(\"lsp-zero\")
+
+lsp.preset(\"recommended\")
+
+require('mason').setup()
+
+-- vtsls is used rather than 'tsserver'/'ts_ls' as there is a 
+-- name conflict betwen mason and nvim lsps that I don't have time to 
+-- resolve.  
+
+require(\"mason-lspconfig\").setup {
+  ensure_installed = { 'vtsls', 'eslint', 'lua_ls', 'rust_analyzer' },
+  
+}
+
+lsp.ensure_installed({
+    'vtsls',
+    'eslint',
+    'lua_ls',
+    'rust_analyzer',
+})
+
+local cmp = require('cmp')
+local cmp_select = {behavior = cmp.SelectBehavior.Select}
+local cmp_mappings = lsp.defaults.cmp_mappings({
+    ['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
+    ['<C-n>'] = cmp.mapping.select_next_item(cmp_select),
+    ['<C-y>'] = cmp.mapping.confirm({ select = true }),
+    [\"<C-Space>\"] = cmp.mapping.complete(),
+})
+
+lsp.set_preferences({
+    sign_icons = { }
+})
+
+lsp.on_attach(function(client, bufnr)
+      
+    local opts = {buffer = bufnr, remap = false}
+
+    vim.keymap.set(\"n\", \"gd\", function() vim.lsp.buf.definition() end, opts)
+    vim.keymap.set(\"n\", \"K\", function() vim.lsp.buf.hover() end, opts)
+    vim.keymap.set(\"n\", \"<leader>vws\", function() vim.lsp.buf.workspace_symbol() end, opts)
+    vim.keymap.set(\"n\", \"<leader>vd\", function() vim.diagnostic.open_float() end, opts)
+    vim.keymap.set(\"n\", \"[d\", function() vim.diagnostic.goto_next() end, opts)
+    vim.keymap.set(\"n\", \"]d\", function() vim.diagnostic.goto_prev() end, opts)
+    vim.keymap.set(\"n\", \"<leader>vca\", function() vim.lsp.buf.code_action() end, opts)
+    vim.keymap.set(\"n\", \"<leader>vrr\", function() vim.lsp.buf.references() end, opts)
+    vim.keymap.set(\"n\", \"<leader>vrn\", function() vim.lsp.buf.rename() end, opts)
+    -- vim.keymap.set(\"n\", \"<C-h>\", function() vim.lsp.buf.signature_help() end, opts)
+
+end)
+
+lsp.setup()
+
+
+"
+add_to_file $LSP_FILEPATH "$CONTENT"
+nvim_source_lua_file "$LSP_FILEPATH"
+###############################################################################
+################################# LSP Config ##################################
 ###############################################################################
