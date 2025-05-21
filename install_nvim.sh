@@ -11,6 +11,8 @@
 
 # - [ ] .env file if it becomes necessary 
 
+# - [ ] Add better lsp list for toggling 
+
 # Status - working, but still more plugins to install and remaps to configure. 
 
 # Stop script if any non-zero exit code is encountered.
@@ -164,6 +166,7 @@ BASE_LUA_FILEPATH="$NVIM_CONFIG_DIR/init.lua"
 SUB_LUA_FILEPATH="$LUA_SUB_DIRECTORY/init.lua"
 REMAP_FILEPATH="$LUA_SUB_DIRECTORY/remap.lua"
 PACKER_FILEPATH="$LUA_SUB_DIRECTORY/packer.lua"
+SET_FILEPATH="$LUA_SUB_DIRECTORY/set.lua"
 
 TELESCOPE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/telescope.lua"
 HARPOON_FILEPATH="$AFTER_PLUGIN_DIRECTORY/harpoon.lua"
@@ -173,14 +176,17 @@ LSP_FILEPATH="$AFTER_PLUGIN_DIRECTORY/lsp.lua"
 
 for i in $BASE_LUA_FILEPATH $SUB_LUA_FILEPATH $REMAP_FILEPATH \
 $PACKER_FILEPATH $AFTER_INIT_LUA_FILEPATH $TELESCOPE_FILEPATH $HARPOON_FILEPATH \
-$UNDOTREE_FILEPATH $LSP_FILEPATH
+$UNDOTREE_FILEPATH $LSP_FILEPATH $SET_FILEPATH
 do
     create_fresh_file $i
 done
 
-add_to_file $SUB_LUA_FILEPATH "print(\"Hello, from $SUB_LUA_FILEPATH!\")"
+# change this filename idk why its called what it is
 add_to_file $BASE_LUA_FILEPATH "require(\"$SUB_LUA_DIR_NAME\")"
 
+# Format this
+add_to_file $SUB_LUA_FILEPATH "require(\"a_sub_directory.remap\")"
+add_to_file $SUB_LUA_FILEPATH "require(\"a_sub_directory.set\")"
 ###############################################################################
 ###############################################################################
 ###############################################################################
@@ -418,7 +424,7 @@ add_to_file $FUGITIVE_FILEPATH "vim.keymap.set(\"n\", \"<leader>gs\", vim.cmd.Gi
 
 nvim_source_lua_file "$FUGITIVE_FILEPATH"
 ###############################################################################
-###############################################################################
+################################# LSP Config ##################################
 ###############################################################################
 CONTENT="
 local lsp = require(\"lsp-zero\")
@@ -432,7 +438,13 @@ require('mason').setup()
 -- resolve.  
 
 require(\"mason-lspconfig\").setup {
-  ensure_installed = { 'vtsls', 'eslint', 'lua_ls', 'rust_analyzer' },
+  ensure_installed = { 
+    'vtsls', 
+    'eslint', 
+    'lua_ls', 
+    'rust_analyzer',
+    'pylsp'
+    },
   
 }
 
@@ -441,6 +453,7 @@ lsp.ensure_installed({
     'eslint',
     'lua_ls',
     'rust_analyzer',
+    'pylsp'
 })
 
 local cmp = require('cmp')
@@ -480,5 +493,45 @@ lsp.setup()
 add_to_file $LSP_FILEPATH "$CONTENT"
 nvim_source_lua_file "$LSP_FILEPATH"
 ###############################################################################
-################################# LSP Config ##################################
+###############################################################################
+###############################################################################
+CONTENT="
+-- I don't like this; vim.opt.guicursor = \"\"
+
+vim.opt.nu = true
+vim.opt.relativenumber = true
+
+vim.opt.tabstop = 4
+vim.opt.softtabstop = 4
+vim.opt.shiftwidth = 4
+vim.opt.expandtab = true
+
+vim.opt.smartindent = true
+
+vim.opt.wrap = false
+
+vim.opt.swapfile = false
+vim.opt.backup = false
+vim.opt.undodir = os.getenv(\"HOME\") .. \"/.vim/undodir\"
+vim.opt.undofile = true
+
+vim.opt.hlsearch = false
+vim.opt.incsearch = true
+
+vim.opt.termguicolors = true
+
+vim.opt.scrolloff = 8
+vim.opt.signcolumn = \"yes\"
+vim.opt.isfname:append(\"@-@\")
+
+vim.opt.updatetime = 50
+
+vim.opt.colorcolumn = \"80\"
+
+vim.g.mapleader = \" \"
+"
+add_to_file $SET_FILEPATH "$CONTENT"
+nvim_source_lua_file "$SET_FILEPATH"
+###############################################################################
+############################ Fugitive Config ##################################
 ###############################################################################
