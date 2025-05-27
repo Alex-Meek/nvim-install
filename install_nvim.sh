@@ -200,55 +200,56 @@ add_to_file $SUB_LUA_FILEPATH "require(\"a_sub_directory.set\")"
 ################################### Remaps ####################################
 ###############################################################################
 CONTENT="
-    vim.g.mapleader = ' '
-    vim.keymap.set('n', '<leader>pv', ':Ex<CR>')
+vim.g.mapleader = ' '
+vim.keymap.set('n', '<leader>pv', ':Ex<CR>')
 
-    -- Allow moving of highlighted text up and down, automatically indenting
-    -- where needed.
-    vim.keymap.set('v', 'J', ':m '>+1<CR>gv=gv')
-    vim.keymap.set('v', 'K', ':m '<-2<CR>gv=gv')
+-- Allow moving of highlighted text up and down, automatically indenting
+-- where needed.
+vim.keymap.set('v', 'J', ':m \'>+1<CR>gv=gv')
+vim.keymap.set('v', 'K', ':m \'<-2<CR>gv=gv')
 
-    -- Using J to append line below to this line, keeps cursor at start of 
-    -- line.
-    vim.keymap.set('n', 'J', 'mzJ\`z')
+-- Using J to append line below to this line, keeps cursor at start of 
+-- line.
+vim.keymap.set('n', 'J', 'mzJ\`z')
 
-    -- Half-page jumping while keeping cursor in the middle of page rather
-    -- than moving to the bottom or top.
-    vim.keymap.set('n', '<C-d>', '<C-d>zz')
-    vim.keymap.set('n', '<C-u>', '<C-u>zz')
+-- Half-page jumping while keeping cursor in the middle of page rather
+-- than moving to the bottom or top.
+vim.keymap.set('n', '<C-d>', '<C-d>zz')
+vim.keymap.set('n', '<C-u>', '<C-u>zz')
 
-    -- Search for string will focus the found string at the center of the 
-    -- page rather than near the top or bottom, simialr to above.
-    vim.keymap.set('n', 'n', 'nzzzv')
-    vim.keymap.set('n', 'N', 'Nzzzv')
+-- Search for string will focus the found string at the center of the 
+-- page rather than near the top or bottom, simialr to above.
+vim.keymap.set('n', 'n', 'nzzzv')
+vim.keymap.set('n', 'N', 'Nzzzv')
 
-    -- Delete over current highlight (p) while preserving buffer string
-    -- instead of replacing the buffer string with the deleted string.
-    vim.keymap.set('x', '<leader>p', '\"_dP')
+-- Delete over current highlight (p) while preserving buffer string
+-- instead of replacing the buffer string with the deleted string.
+vim.keymap.set('x', '<leader>p', '\"_dP')
 
-    -- Yank into system clipboard
-    vim.keymap.set('n', '<leader>y', '\"+y')
-    vim.keymap.set('v', '<leader>y', '\"+y')
-    vim.keymap.set('n', '<leader>Y', '\"+y')
+-- Yank into system clipboard
+vim.keymap.set('n', '<leader>y', '\"+y')
+vim.keymap.set('v', '<leader>y', '\"+y')
+vim.keymap.set('n', '<leader>Y', '\"+y')
 
-    -- Delete to void (prevent overwrite of the buffer string)
-    vim.keymap.set('n', '<leader>d', '\"_d')
-    vim.keymap.set('v', '<leader>d', '\"_d')
+-- Delete to void (prevent overwrite of the buffer string)
+vim.keymap.set('n', '<leader>d', '\"_d')
+vim.keymap.set('v', '<leader>d', '\"_d')
 
-    -- Prevent the accidental use of Ex mode
-    vim.keymap.set('n', 'Q', '<nop>')
+-- Prevent the accidental use of Ex mode
+vim.keymap.set('n', 'Q', '<nop>')
 
-    -- Quick fix navigation
-    vim.keymap.set('n', '<C-k>', '<cmd>cnext<CR>zz')
-    vim.keymap.set('n', '<C-j>', '<cmd>cprev<CR>zz')
-    vim.keymap.set('n', '<leader>k', '<cmd>lnext<CR>zz')
-    vim.keymap.set('n', '<leader>j', '<cmd>lprev<CR>zz')
+-- Quick fix navigation
+vim.keymap.set('n', '<C-k>', '<cmd>cnext<CR>zz')
+vim.keymap.set('n', '<C-j>', '<cmd>cprev<CR>zz')
+vim.keymap.set('n', '<leader>k', '<cmd>lnext<CR>zz')
+vim.keymap.set('n', '<leader>j', '<cmd>lprev<CR>zz')
 
-    -- Quick find and replace for the current word
-    vim.keymap.set('n', '<leader>s', [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
-    vim.keymap.set('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
+-- Quick find and replace for the current word
+vim.keymap.set('n', '<leader>s', [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
+vim.keymap.set('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
 
 "
+add_to_file $REMAP_FILEPATH "$CONTENT"
 add_to_file $BASE_LUA_FILEPATH "require('$SUB_LUA_DIR_NAME.remap')"
 ###############################################################################
 ###############################################################################
