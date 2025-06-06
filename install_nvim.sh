@@ -294,7 +294,6 @@ CONTENT="
         use('mbbill/undotree')
         use('tpope/vim-fugitive')
 
-        use ({'neovim/nvim-lspconfig', tag = 'v0.1.7'})
         use ({'williamboman/mason.nvim', tag = 'v1.8.1',})
         use ({
             'williamboman/mason-lspconfig.nvim', 
@@ -304,6 +303,7 @@ CONTENT="
             },
         })
 
+        use ({'neovim/nvim-lspconfig', tag = 'v0.1.7'})
 
         use ({
             'VonHeikemen/lsp-zero.nvim',
@@ -512,24 +512,31 @@ CONTENT="
 
     require('mason-lspconfig').setup {
     ensure_installed = { 
-        'vtsls', 
-        'eslint', 
+        -- 'vtsls', 
+        -- 'eslint', 
         'lua_ls', 
         'rust_analyzer',
-        'pylsp'
+        'pyright'
         },
     
     }
 
     lsp.ensure_installed({
-        'vtsls',
-        'eslint',
+        -- 'vtsls',
+        -- 'eslint',
         'lua_ls',
         'rust_analyzer',
-        'pylsp'
+        'pyright'
     })
 
     local cmp = require('cmp')
+    cmp.setup {
+        mapping = cmp_mappings,
+        sources = {
+            { name = 'nvim_lsp' },
+            { name = 'buffer' },
+        },
+    }
     local cmp_select = {behavior = cmp.SelectBehavior.Select}
     local cmp_mappings = lsp.defaults.cmp_mappings({
         ['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
