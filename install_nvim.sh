@@ -13,6 +13,8 @@
 
 # - [ ] Add better lsp list for toggling 
 
+# - [ ] Add the linux dependencies (ripgrep, xclip, anything else)
+
 # Status - working, but still more plugins to install and remaps to configure. 
 
 # Stop script if any non-zero exit code is encountered.
@@ -351,15 +353,21 @@ CONTENT="
         '<C-p>', 
         builtin.git_files, { }
     )
-    vim.keymap.set(
-        'n', 
-        '<leader>ps', 
-        function() 
-            builtin.grep_string({ 
-                search = vim.fn.input(\"Grep > \") 
-            });
-        end
-    )
+   vim.keymap.set(
+      'n',
+      '<leader>ps',
+      function()
+        require('telescope.builtin').grep_string({
+          search = vim.fn.input('Grep > '),
+          cwd = vim.loop.cwd() 
+        })
+      end
+    ) 
+    vim.keymap.set('n', '<leader>pw', function()
+        require('telescope.builtin').live_grep({
+        cwd = vim.loop.cwd() 
+        })
+    end, { desc = 'Live grep from current files dir' })
 "
 add_to_file $TELESCOPE_FILEPATH "$CONTENT"
 packer_sync # is this necessary?
