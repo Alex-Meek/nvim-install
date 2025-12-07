@@ -1,162 +1,229 @@
 #!/bin/bash
 
-# To Do
-
-# - [ ] Why is this better than just following the tutorial
-    # 1. Using on multiple systems e.g. remote servers. (need to make this script robust, i.e. if curl is missing etc.)
-# - [ ] Make it easer to change the configuration, e.g. the colorscheme.
-# - [ ] Make sure each line is necessary, and we don't have a tonne of duplicate code 
-# - [ ] Make sure the sections/layout makes sense.
-# - [ ] If things should be in separate config files, move them there. 
-
-# - [ ] .env file if it becomes necessary 
-
-# - [ ] Add better lsp list for toggling 
-
-# - [ ] Add the linux dependencies (ripgrep, xclip, anything else)
-
-# Status - working, but still more plugins to install and remaps to configure. 
-
-# Stop script if any non-zero exit code is encountered.
 set -e
 
-create_file () {
+###############################################################################
+# Detect Neovim binary
+###############################################################################
+
+NVIM_CMD="nvim"
+if [ -x "$HOME/.local/nvim-win64/bin/nvim.exe" ]; then
+    NVIM_CMD="$HOME/.local/nvim-win64/bin/nvim.exe"
+fi
+
+if ! "$NVIM_CMD" --version >/dev/null 2>&1; then
+    echo "Neovim not found or not executable at: $NVIM_CMD"
+    echo "Install Neovim (e.g. to ~/.local/nvim-win64) and re-run this script."
+    exit 1
+fi
+
+echo "Using Neovim: $NVIM_CMD"
+
+###############################################################################
+# Choose config/data dirs to match Neovim on this OS
+###############################################################################
+
+UNAME_STR=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
+    # Windows (MSYS/Git Bash): match what you observed
+    NVIM_CONFIG_DIR="$HOME/AppData/Local/nvim"
+    NVIM_DATA_DIR="$HOME/AppData/Local/nvim-data"
+else
+    # Linux/Unix default
+    NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+    NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
+fi
+
+echo "Neovim config dir: $NVIM_CONFIG_DIR"
+echo "Neovim data dir:   $NVIM_DATA_DIR"
+
+###############################################################################
+# Install Node.js + npm on MSYS2 (for language servers)
+###############################################################################
+
+install_node_for_msys2() {
+    echo "=== Installing Node.js (and npm) via MSYS2 pacman ==="
+    echo "MSYSTEM=${MSYSTEM:-<empty>}"
+
+    if ! command -v pacman >/dev/null 2>&1; then
+        echo "'pacman' not found. This function is intended for MSYS2."
+        return 1
+    fi
+
+    # Detect architecture (x86_64 vs aarch64)
+    local UNAME_MACH
+    UNAME_MACH=$(uname -m 2>/dev/null || echo unknown)
+
+    local NODE_PKG=""
+
+    case "${MSYSTEM:-}" in
+        UCRT64)
+            NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
+            ;;
+        CLANG64)
+            NODE_PKG="mingw-w64-clang-x86_64-nodejs"
+            ;;
+        MINGW64)
+            NODE_PKG="mingw-w64-x86_64-nodejs"
+            ;;
+        MINGW32)
+            NODE_PKG="mingw-w64-i686-nodejs"
+            ;;
+        CLANGARM64)
+            NODE_PKG="mingw-w64-clang-aarch64-nodejs"
+            ;;
+        MSYS|"")
+            # Running from plain MSYS shell.
+            # Prefer UCRT64 on x86_64, CLANGARM64 on aarch64.
+            echo "MSYSTEM=MSYS: installing a MinGW/UCRT Node.js package anyway."
+
+            if [ "$UNAME_MACH" = "x86_64" ]; then
+                NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
+            elif [ "$UNAME_MACH" = "aarch64" ]; then
+                NODE_PKG="mingw-w64-clang-aarch64-nodejs"
+            else
+                echo "Unknown architecture '$UNAME_MACH'; falling back to 'nodejs'."
+                NODE_PKG="nodejs"
+            fi
+            ;;
+        *)
+            echo "Unrecognised MSYSTEM='${MSYSTEM}'. Trying UCRT64/CLANG64-style Node."
+            if [ "$UNAME_MACH" = "x86_64" ]; then
+                NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
+            elif [ "$UNAME_MACH" = "aarch64" ]; then
+                NODE_PKG="mingw-w64-clang-aarch64-nodejs"
+            else
+                NODE_PKG="nodejs"
+            fi
+            ;;
+    esac
+
+    echo "Installing package '$NODE_PKG'..."
+    set +e
+    pacman -Sy --needed --noconfirm "$NODE_PKG"
+    status=$?
+    set -e
+
+    if [ $status -ne 0 ]; then
+        echo "pacman failed to install '$NODE_PKG' (exit $status)."
+        echo "Check available Node packages with:"
+        echo "  pacman -Ss nodejs"
+        return $status
+    fi
+
+    echo "Node.js install complete. Detected versions (if on PATH):"
+    command -v node && node --version || echo "node not on PATH"
+    command -v npm && npm --version || echo "npm not on PATH"
+}
+
+# Only run this on MSYS2 / Git Bash
+if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
+    install_node_for_msys2
+fi
+
+###############################################################################
+# Helper functions
+###############################################################################
+
+create_file() {
     local file="$1"
-    if ! echo "" > $file; then
+    if ! echo "" >"$file"; then
         echo "Failed to create file \"$file\"."
         return 1
     else
         echo "File \"$file\" created successfully."
     fi
-    return 0
 }
 
-delete_file () {
+delete_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        if rm $file; then
+        if ! rm "$file"; then
             echo "Failed to remove file \"$file\"."
             return 1
         fi
     fi
 }
 
-create_directory () {
+create_directory() {
     local directory="$1"
-    if ! mkdir -p $directory; then
+    if ! mkdir -p "$directory"; then
         echo "Failed to create directory \"$directory\"."
         return 1
     else
         echo "Directory \"$directory\" created successfully."
     fi
-    return 0
 }
 
-delete_directory () {
+delete_directory() {
     local directory="$1"
-    if [[ -d $directory ]]; then
-        if ! yes | rm -r $directory; then
+    if [[ -d "$directory" ]]; then
+        if ! yes | rm -r "$directory"; then
             echo "Failed to remove directory \"$directory\"."
             return 1
         fi
     fi
 }
 
-create_fresh_file () {
+create_fresh_file() {
     local file="$1"
-    delete_file $file
-    create_file $file
-    return 0
+    delete_file "$file"
+    create_file "$file"
 }
 
-create_fresh_directory () {
+create_fresh_directory() {
     local directory="$1"
-    delete_directory $directory
-    create_directory $directory
-    return 0
+    delete_directory "$directory"
+    create_directory "$directory"
 }
 
-add_to_file () {
+add_to_file() {
     local file="$1"
     local edits="$2"
 
-    if ! { cat >> "$file" <<EOF
+    if ! {
+        cat >>"$file" <<EOF
 $edits
 EOF
     }; then
         echo "Failed to append to file \"$file\"."
         return 1
     fi
-
-    return 0
 }
 
-packer_sync () {
-    nvim --headless -c "autocmd User PackerComplete quitall" -c "PackerSync"
+packer_sync() {
+    "$NVIM_CMD" --headless \
+        -c "autocmd User PackerComplete quitall" \
+        -c "PackerSync"
 }
 
-call_lua_function () {
+call_lua_function() {
     local lua_function="$1"
-    nvim --headless -c "lua $lua_function()" -c "quitall"
+    "$NVIM_CMD" --headless -c "lua $lua_function()" -c "quitall"
 }
 
-nvim_source_lua_file () {
+to_nvim_path() {
+    local p="$1"
+    # On MSYS2 / Git Bash, convert /c/... to C:/...
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$p"
+    else
+        printf '%s\n' "$p"
+    fi
+}
+
+nvim_source_lua_file() {
     local filepath="$1"
-    nvim --headless -c "luafile $filepath" +qa
+    local nvim_path
+    nvim_path=$(to_nvim_path "$filepath")
+    "$NVIM_CMD" --headless -c "luafile $nvim_path" +qa
 }
 
 ###############################################################################
-############################### Install Neovim ################################
+# Create config directories and base files
 ###############################################################################
 
-# Install NeoVim
-
-# export PATH="$HOME/.local/bin:$PATH"
-
-# INSTALL_DIR="$HOME/.local"
-# BIN_DIR="$INSTALL_DIR/bin"
-# APPIMAGE_NAME="nvim.appimage"
-
-# mkdir -p "$BIN_DIR"
-
-# echo "Fetching latest Neovim AppImage URL..."
-# DOWNLOAD_URL=$(curl -s https://api.github.com/repos/neovim/neovim/releases/tags/v0.9.5 \
-#     | grep browser_download_url \
-#     | grep "$APPIMAGE_NAME\"" \
-#     | cut -d '"' -f4)
-
-# if [ -z "$DOWNLOAD_URL" ]; then
-#     echo "❌ Failed to find the AppImage download URL."
-#     exit 1
-# fi
-
-# echo "Downloading Neovim AppImage from $DOWNLOAD_URL ..."
-# curl -LO "$DOWNLOAD_URL"
-
-# echo "Making AppImage executable..."
-# chmod u+x "$APPIMAGE_NAME"
-
-# echo "Extracting AppImage..."
-# ./"$APPIMAGE_NAME" --appimage-extract
-
-# echo "Installing Neovim to $INSTALL_DIR..."
-# rm -rf "$INSTALL_DIR/nvim"
-# mv squashfs-root "$INSTALL_DIR/nvim"
-
-# echo "Creating symlink in $BIN_DIR..."
-# ln -sf "$INSTALL_DIR/nvim/usr/bin/nvim" "$BIN_DIR/nvim"
-
-# echo "Cleaning up..."
-# rm "$APPIMAGE_NAME"
-
-# echo "✅ Neovim installed! Make sure $BIN_DIR is in your PATH."
-
-# "$BIN_DIR/nvim" --version
-
-###############################################################################
-######################## Create files and directories #########################
-###############################################################################
-NVIM_CONFIG_DIR="$HOME/.config/nvim"
 LUA_DIRECTORY="$NVIM_CONFIG_DIR/lua"
 
 SUB_LUA_DIR_NAME="a_sub_directory"
@@ -164,9 +231,9 @@ LUA_SUB_DIRECTORY="$LUA_DIRECTORY/$SUB_LUA_DIR_NAME"
 
 AFTER_PLUGIN_DIRECTORY="$NVIM_CONFIG_DIR/after/plugin"
 
-for i in $NVIM_CONFIG_DIR $LUA_DIRECTORY $LUA_SUB_DIRECTORY $AFTER_PLUGIN_DIRECTORY
-do 
-    create_fresh_directory $i
+for d in "$NVIM_CONFIG_DIR" "$LUA_DIRECTORY" "$LUA_SUB_DIRECTORY" \
+    "$AFTER_PLUGIN_DIRECTORY"; do
+    create_fresh_directory "$d"
 done
 
 BASE_LUA_FILEPATH="$NVIM_CONFIG_DIR/init.lua"
@@ -181,250 +248,236 @@ UNDOTREE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/undotree.lua"
 FUGITIVE_FILEPATH="$AFTER_PLUGIN_DIRECTORY/fugitive.lua"
 LSP_FILEPATH="$AFTER_PLUGIN_DIRECTORY/lsp.lua"
 
-for i in $BASE_LUA_FILEPATH $SUB_LUA_FILEPATH $REMAP_FILEPATH \
-$PACKER_FILEPATH $AFTER_INIT_LUA_FILEPATH $TELESCOPE_FILEPATH $HARPOON_FILEPATH \
-$UNDOTREE_FILEPATH $LSP_FILEPATH $SET_FILEPATH
-do
-    create_fresh_file $i
+for f in "$BASE_LUA_FILEPATH" "$SUB_LUA_FILEPATH" "$REMAP_FILEPATH" \
+    "$PACKER_FILEPATH" "$TELESCOPE_FILEPATH" "$HARPOON_FILEPATH" \
+    "$UNDOTREE_FILEPATH" "$LSP_FILEPATH" "$SET_FILEPATH"; do
+    create_fresh_file "$f"
 done
 
-# change this filename idk why its called what it is
-add_to_file $BASE_LUA_FILEPATH "require(\"$SUB_LUA_DIR_NAME\")"
+# init.lua: load our Lua subdir and its modules
+add_to_file "$BASE_LUA_FILEPATH" "require(\"$SUB_LUA_DIR_NAME\")"
+add_to_file "$BASE_LUA_FILEPATH" "require(\"$SUB_LUA_DIR_NAME.remap\")"
+add_to_file "$BASE_LUA_FILEPATH" "require(\"$SUB_LUA_DIR_NAME.packer\")"
 
-# Format this
-add_to_file $SUB_LUA_FILEPATH "require(\"a_sub_directory.remap\")"
-add_to_file $SUB_LUA_FILEPATH "require(\"a_sub_directory.set\")"
-###############################################################################
-###############################################################################
-###############################################################################
+# subdir init.lua: load remap + set
+add_to_file "$SUB_LUA_FILEPATH" "require(\"$SUB_LUA_DIR_NAME.remap\")"
+add_to_file "$SUB_LUA_FILEPATH" "require(\"$SUB_LUA_DIR_NAME.set\")"
 
 ###############################################################################
-################################### Remaps ####################################
+# Remaps
 ###############################################################################
+
+echo "Remaps"
+
 CONTENT="
 vim.g.mapleader = ' '
 vim.keymap.set('n', '<leader>pv', ':Ex<CR>')
 
--- Allow moving of highlighted text up and down, automatically indenting
--- where needed.
 vim.keymap.set('v', 'J', ':m \'>+1<CR>gv=gv')
 vim.keymap.set('v', 'K', ':m \'<-2<CR>gv=gv')
 
--- Using J to append line below to this line, keeps cursor at start of 
--- line.
 vim.keymap.set('n', 'J', 'mzJ\`z')
 
--- Half-page jumping while keeping cursor in the middle of page rather
--- than moving to the bottom or top.
 vim.keymap.set('n', '<C-d>', '<C-d>zz')
 vim.keymap.set('n', '<C-u>', '<C-u>zz')
 
--- Search for string will focus the found string at the center of the 
--- page rather than near the top or bottom, simialr to above.
 vim.keymap.set('n', 'n', 'nzzzv')
 vim.keymap.set('n', 'N', 'Nzzzv')
 
--- Delete over current highlight (p) while preserving buffer string
--- instead of replacing the buffer string with the deleted string.
 vim.keymap.set('x', '<leader>p', '\"_dP')
 
--- Yank into system clipboard
 vim.keymap.set('n', '<leader>y', '\"+y')
 vim.keymap.set('v', '<leader>y', '\"+y')
 vim.keymap.set('n', '<leader>Y', '\"+y')
 
--- Delete to void (prevent overwrite of the buffer string)
 vim.keymap.set('n', '<leader>d', '\"_d')
 vim.keymap.set('v', '<leader>d', '\"_d')
 
--- Prevent the accidental use of Ex mode
 vim.keymap.set('n', 'Q', '<nop>')
 
--- Quick fix navigation
 vim.keymap.set('n', '<C-k>', '<cmd>cnext<CR>zz')
 vim.keymap.set('n', '<C-j>', '<cmd>cprev<CR>zz')
 vim.keymap.set('n', '<leader>k', '<cmd>lnext<CR>zz')
 vim.keymap.set('n', '<leader>j', '<cmd>lprev<CR>zz')
 
--- Quick find and replace for the current word
-vim.keymap.set('n', '<leader>s', [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
+vim.keymap.set('n', '<leader>s', [[:%s/\\<<C-r><C-w>\\>/<C-r><C-w>/gI<Left><Left><Left>]])
 vim.keymap.set('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
-
 "
-add_to_file $REMAP_FILEPATH "$CONTENT"
-add_to_file $BASE_LUA_FILEPATH "require('$SUB_LUA_DIR_NAME.remap')"
-###############################################################################
-###############################################################################
-###############################################################################
+add_to_file "$REMAP_FILEPATH" "$CONTENT"
+
+echo "Remaps End"
 
 ###############################################################################
-################################ Packer install ###############################
-###############################################################################\
-if [[ -d "$HOME/.local/share/nvim/site/pack/packer" ]]; then
-    yes | rm -r "$HOME/.local/share/nvim/site/pack/packer"
+# Packer install: use Neovim's data dir, as a *start* plugin
+###############################################################################
+
+echo "Packer install"
+
+PACKER_DIR="$NVIM_DATA_DIR/site/pack/packer/start/packer.nvim"
+
+if [[ -d "$PACKER_DIR" ]]; then
+    yes | rm -r "$PACKER_DIR"
 fi
-git clone --depth 1 https://github.com/wbthomason/packer.nvim \
-    ~/.local/share/nvim/site/pack/packer/start/packer.nvim
+mkdir -p "$PACKER_DIR"
 
+git clone --depth 1 https://github.com/wbthomason/packer.nvim "$PACKER_DIR"
 
 CONTENT="
-    vim.cmd [[packadd packer.nvim]]
+    local packer = require('packer')
 
-    return require('packer').startup(function(use)
+    return packer.startup(function(use)
 
         use('wbthomason/packer.nvim')
 
-        use ({
-            'nvim-telescope/telescope.nvim', 
+        use({
+            'nvim-telescope/telescope.nvim',
             tag = '0.1.8',
-            requires = { 
-                {'nvim-lua/plenary.nvim'} 
-            }
+            requires = {
+                { 'nvim-lua/plenary.nvim' }
+            },
         })
 
         use({
             'rose-pine/neovim',
             as = 'rose-pine',
-            config = function ()
+            config = function()
                 vim.cmd('colorscheme rose-pine')
-            end
+            end,
         })
 
-        use('nvim-treesitter/nvim-treesitter', {run = ':TSUpdate'})
+        use({ 'nvim-treesitter/nvim-treesitter' })
         use('nvim-treesitter/playground')
         use('theprimeagen/harpoon')
         use('mbbill/undotree')
         use('tpope/vim-fugitive')
 
-        use ({'williamboman/mason.nvim', tag = 'v1.8.1',})
-        use ({
-            'williamboman/mason-lspconfig.nvim', 
+        use({ 'williamboman/mason.nvim', tag = 'v1.8.1' })
+        use({
+            'williamboman/mason-lspconfig.nvim',
             branch = 'v1.x',
             requires = {
                 'williamboman/mason.nvim',
             },
         })
 
-        use ({'neovim/nvim-lspconfig', tag = 'v0.1.7'})
+        use({ 'neovim/nvim-lspconfig', tag = 'v0.1.7' })
 
-        use ({
+        use({
             'VonHeikemen/lsp-zero.nvim',
             branch = 'v1.x',
             requires = {
-
-                -- Autocompletion
-                {'hrsh7th/nvim-cmp'},         -- Required
-                {'hrsh7th/cmp-nvim-lsp'},     -- Required
-                {'hrsh7th/cmp-buffer'},       -- Optional
-                {'hrsh7th/cmp-path'},         -- Optional
-                {'saadparwaiz1/cmp_luasnip'}, -- Optional
-                {'hrsh7th/cmp-nvim-lua'},     -- Optional
-
-                -- Snippets
-                {'L3MON4D3/LuaSnip'},             -- Required
-                {'rafamadriz/friendly-snippets'}, -- Optional
-            }
+                { 'hrsh7th/nvim-cmp' },
+                { 'hrsh7th/cmp-nvim-lsp' },
+                { 'hrsh7th/cmp-buffer' },
+                { 'hrsh7th/cmp-path' },
+                { 'saadparwaiz1/cmp_luasnip' },
+                { 'hrsh7th/cmp-nvim-lua' },
+                { 'L3MON4D3/LuaSnip' },
+                { 'rafamadriz/friendly-snippets' },
+            },
         })
 
     end)
 "
+add_to_file "$PACKER_FILEPATH" "$CONTENT"
 
-add_to_file $PACKER_FILEPATH "$CONTENT"
-add_to_file $BASE_LUA_FILEPATH "require(\"$SUB_LUA_DIR_NAME.packer\")"
-
+# Install / sync plugins
 packer_sync
-###############################################################################
-###############################################################################
-###############################################################################
+
+echo "Packer install end"
 
 ###############################################################################
-################################# Telescope Config ############################
+# Telescope config
 ###############################################################################
+
+echo "telescope config"
+
 CONTENT="
     local builtin = require('telescope.builtin')
     vim.keymap.set(
-        'n', 
-        '<leader>pf', 
-        builtin.find_files, 
+        'n',
+        '<leader>pf',
+        builtin.find_files,
         { desc = 'Telescope find files' }
     )
     vim.keymap.set(
-        'n', 
-        '<C-p>', 
-        builtin.git_files, { }
+        'n',
+        '<C-p>',
+        builtin.git_files,
+        {}
     )
-   vim.keymap.set(
-      'n',
-      '<leader>ps',
-      function()
-        require('telescope.builtin').grep_string({
-          search = vim.fn.input('Grep > '),
-          cwd = vim.loop.cwd() 
-        })
-      end
-    ) 
+    vim.keymap.set(
+        'n',
+        '<leader>ps',
+        function()
+            builtin.grep_string({
+                search = vim.fn.input('Grep > '),
+                cwd = vim.loop.cwd(),
+            })
+        end
+    )
     vim.keymap.set('n', '<leader>pw', function()
-        require('telescope.builtin').live_grep({
-        cwd = vim.loop.cwd() 
+        builtin.live_grep({
+            cwd = vim.loop.cwd(),
         })
     end, { desc = 'Live grep from current files dir' })
 "
-add_to_file $TELESCOPE_FILEPATH "$CONTENT"
-packer_sync # is this necessary?
-###############################################################################
-###############################################################################
-###############################################################################
+add_to_file "$TELESCOPE_FILEPATH" "$CONTENT"
+
+echo "telescope config end"
 
 ###############################################################################
-################################# Colour Config ###############################
+# Colour config
 ###############################################################################
+
+echo "colour config"
+
 COLOURS_LUA_FILEPATH="$AFTER_PLUGIN_DIRECTORY/colours.lua"
-
-create_fresh_file $COLOURS_LUA_FILEPATH
+create_fresh_file "$COLOURS_LUA_FILEPATH"
 
 CONTENT="
     function ColourMyPencils(colour)
         colour = colour or 'rose-pine'
         vim.cmd.colorscheme(colour)
 
-        vim.api.nvim_set_hl(0, 'Normal', { bg='NONE' })
-        vim.api.nvim_set_hl(0, 'NormalFloat', { bg='NONE' })
-
+        vim.api.nvim_set_hl(0, 'Normal', { bg = 'NONE' })
+        vim.api.nvim_set_hl(0, 'NormalFloat', { bg = 'NONE' })
     end
 
-    -- Ensure highlights are applied after the colorscheme loads
     vim.api.nvim_create_autocmd('ColorScheme', {
         pattern = '*',
         callback = function()
-            vim.api.nvim_set_hl(0, 'Normal', { bg='NONE' })
-            vim.api.nvim_set_hl(0, 'NormalFloat', { bg='NONE' })
-        end
+            vim.api.nvim_set_hl(0, 'Normal', { bg = 'NONE' })
+            vim.api.nvim_set_hl(0, 'NormalFloat', { bg = 'NONE' })
+        end,
     })
 
     ColourMyPencils()
 "
-add_to_file $COLOURS_LUA_FILEPATH "$CONTENT"
-packer_sync
-call_lua_function "ColourMyPencils"
-###############################################################################
-###############################################################################
-###############################################################################
+add_to_file "$COLOURS_LUA_FILEPATH" "$CONTENT"
+
+echo "Colour config end"
 
 ###############################################################################
-############################ Treesitter Config ################################
+# Treesitter config
 ###############################################################################
-TREESITTER_LUA_FILEPATH=$AFTER_PLUGIN_DIRECTORY/treesitter.lua
-create_fresh_file $TREESITTER_LUA_FILEPATH
+
+echo "treesitter config"
+
+TREESITTER_LUA_FILEPATH="$AFTER_PLUGIN_DIRECTORY/treesitter.lua"
+create_fresh_file "$TREESITTER_LUA_FILEPATH"
 
 LANG_FILE="./treesitter_language_flags.ini"
-
 lua_content="local language_flags = {
 "
-while IFS='=' read -r key value; do
-    lua_content+="    $key = $value,
+if [[ -f "$LANG_FILE" ]]; then
+    while IFS='=' read -r key value; do
+        lua_content+="    $key = $value,
     "
-done < "$LANG_FILE"
-lua_content+="}"
+    done <"$LANG_FILE"
+fi
+lua_content+="}
+"
 
 CONTENT="
     $lua_content
@@ -437,29 +490,25 @@ CONTENT="
         end
     end
 
-    require'nvim-treesitter.configs'.setup {
-    
+    require('nvim-treesitter.configs').setup {
         ensure_installed = ensure_list,
-
         sync_install = false,
-
         auto_install = true,
-
         highlight = {
             enable = true,
         },
     }
 "
+add_to_file "$TREESITTER_LUA_FILEPATH" "$CONTENT"
 
-add_to_file $TREESITTER_LUA_FILEPATH "$CONTENT"
-nvim_source_lua_file "$TREESITTER_LUA_FILEPATH"
-###############################################################################
-###############################################################################
-###############################################################################
+echo "treesitter config end"
 
 ###############################################################################
-############################# Harpoon Config ##################################
+# Harpoon config
 ###############################################################################
+
+echo "harpoon config"
+
 CONTENT="
     local mark = require('harpoon.mark')
     local ui = require('harpoon.ui')
@@ -472,41 +521,42 @@ CONTENT="
     vim.keymap.set('n', '<C-n>', function() ui.nav_file(3) end)
     vim.keymap.set('n', '<C-s>', function() ui.nav_file(4) end)
 "
+add_to_file "$HARPOON_FILEPATH" "$CONTENT"
 
-add_to_file $HARPOON_FILEPATH "$CONTENT"
-nvim_source_lua_file "$HARPOON_FILEPATH"
-###############################################################################
-###############################################################################
-###############################################################################
+echo "harpoon config end"
 
 ###############################################################################
-############################ Undotree Config ##################################
+# Undotree config
 ###############################################################################
+
+echo "undotree config"
+
 CONTENT="
     vim.keymap.set('n', '<leader>u', vim.cmd.UndotreeToggle)
 "
+add_to_file "$UNDOTREE_FILEPATH" "$CONTENT"
 
-add_to_file $UNDOTREE_FILEPATH "$CONTENT"
-nvim_source_lua_file "$UNDOTREE_FILEPATH"
-###############################################################################
-###############################################################################
-###############################################################################
+echo "undotreeconfig end"
 
 ###############################################################################
-############################ Fugitive Config ##################################
+# Fugitive config
 ###############################################################################
+
+echo "Fugitive config"
+
 CONTENT="
-    vim.keymap.set(\"n\", \"<leader>gs\", vim.cmd.Git)
+    vim.keymap.set('n', '<leader>gs', vim.cmd.Git)
 "
-add_to_file $FUGITIVE_FILEPATH "$CONTENT"
-nvim_source_lua_file "$FUGITIVE_FILEPATH"
-###############################################################################
-###############################################################################
-###############################################################################
+add_to_file "$FUGITIVE_FILEPATH" "$CONTENT"
+
+echo "Fugitive config end"
 
 ###############################################################################
-################################# LSP Config ##################################
+# LSP config
 ###############################################################################
+
+echo "LSP config"
+
 CONTENT="
     local lsp = require('lsp-zero')
 
@@ -514,38 +564,22 @@ CONTENT="
 
     require('mason').setup()
 
-    -- vtsls is used rather than 'tsserver'/'ts_ls' as there is a 
-    -- name conflict betwen mason and nvim lsps that I don't have time to 
-    -- resolve.  
-
     require('mason-lspconfig').setup {
-    ensure_installed = { 
-        -- 'vtsls', 
-        -- 'eslint', 
-        'lua_ls', 
-        'rust_analyzer',
-        'pyright'
+        ensure_installed = {
+            'lua_ls',
+            'rust_analyzer',
+            'pyright',
         },
-    
     }
 
     lsp.ensure_installed({
-        -- 'vtsls',
-        -- 'eslint',
         'lua_ls',
         'rust_analyzer',
-        'pyright'
+        'pyright',
     })
 
     local cmp = require('cmp')
-    cmp.setup {
-        mapping = cmp_mappings,
-        sources = {
-            { name = 'nvim_lsp' },
-            { name = 'buffer' },
-        },
-    }
-    local cmp_select = {behavior = cmp.SelectBehavior.Select}
+    local cmp_select = { behavior = cmp.SelectBehavior.Select }
     local cmp_mappings = lsp.defaults.cmp_mappings({
         ['<C-p>'] = cmp.mapping.select_prev_item(cmp_select),
         ['<C-n>'] = cmp.mapping.select_next_item(cmp_select),
@@ -553,13 +587,20 @@ CONTENT="
         ['<C-Space>'] = cmp.mapping.complete(),
     })
 
+    cmp.setup({
+        mapping = cmp_mappings,
+        sources = {
+            { name = 'nvim_lsp' },
+            { name = 'buffer' },
+        },
+    })
+
     lsp.set_preferences({
-        sign_icons = { }
+        sign_icons = {},
     })
 
     lsp.on_attach(function(client, bufnr)
-        
-        local opts = {buffer = bufnr, remap = false}
+        local opts = { buffer = bufnr, remap = false }
 
         vim.keymap.set('n', 'gd', function() vim.lsp.buf.definition() end, opts)
         vim.keymap.set('n', 'K', function() vim.lsp.buf.hover() end, opts)
@@ -570,20 +611,21 @@ CONTENT="
         vim.keymap.set('n', '<leader>vca', function() vim.lsp.buf.code_action() end, opts)
         vim.keymap.set('n', '<leader>vrr', function() vim.lsp.buf.references() end, opts)
         vim.keymap.set('n', '<leader>vrn', function() vim.lsp.buf.rename() end, opts)
-        -- vim.keymap.set('n', '<C-h>', function() vim.lsp.buf.signature_help() end, opts)
-
     end)
 
     lsp.setup()
 "
-add_to_file $LSP_FILEPATH "$CONTENT"
-nvim_source_lua_file "$LSP_FILEPATH"
-###############################################################################
-###############################################################################
-###############################################################################
-CONTENT="
--- I don't like this; vim.opt.guicursor = ' '
+add_to_file "$LSP_FILEPATH" "$CONTENT"
 
+echo "LSP config end"
+
+###############################################################################
+# Options
+###############################################################################
+
+echo "options"
+
+CONTENT="
     vim.opt.nu = true
     vim.opt.relativenumber = true
 
@@ -616,8 +658,6 @@ CONTENT="
 
     vim.g.mapleader = ' '
 "
-add_to_file $SET_FILEPATH "$CONTENT"
-nvim_source_lua_file "$SET_FILEPATH"
-###############################################################################
-############################ Fugitive Config ##################################
-###############################################################################
+add_to_file "$SET_FILEPATH" "$CONTENT"
+
+echo "options end"
