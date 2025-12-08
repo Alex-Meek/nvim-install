@@ -5,174 +5,144 @@ set -e
 REPO_URL="https://github.com/arturgoms/nvim"
 
 ###############################################################################
+# Setup Local Binary Paths (No Root Required)
+###############################################################################
+
+# Ensure ~/.local/bin exists and is in PATH for this script execution
+mkdir -p "$HOME/.local/bin"
+mkdir -p "$HOME/.local/share"
+export PATH="$HOME/.local/bin:$PATH"
+
+###############################################################################
 # Detect Neovim binary
 ###############################################################################
 
 NVIM_CMD="nvim"
-if [ -x "$HOME/.local/nvim-win64/bin/nvim.exe" ]; then
-    NVIM_CMD="$HOME/.local/nvim-win64/bin/nvim.exe"
-fi
 
-if ! "$NVIM_CMD" --version >/dev/null 2>&1; then
-    echo "Neovim not found or not executable at: $NVIM_CMD"
-    echo "Install Neovim (e.g. to ~/.local/nvim-win64) and re-run this script."
-    exit 1
+# Cleanup broken install if detected (the "Not: command not found" issue)
+if [ -f "$HOME/.local/bin/nvim" ]; then
+    # Check if it's a binary or a text file (error page)
+    if grep -q "Not Found" "$HOME/.local/bin/nvim" 2>/dev/null || \
+       grep -q "DOCTYPE html" "$HOME/.local/bin/nvim" 2>/dev/null; then
+        echo "Detected broken Neovim download. Removing..."
+        rm "$HOME/.local/bin/nvim"
+    fi
 fi
-
-echo "Using Neovim: $NVIM_CMD"
 
 ###############################################################################
 # Choose config/data dirs to match Neovim on this OS
 ###############################################################################
 
 UNAME_STR=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
+UNAME_MACH=$(uname -m 2>/dev/null || echo unknown)
 
 if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
     # Windows (MSYS/Git Bash)
     NVIM_CONFIG_DIR="$HOME/AppData/Local/nvim"
     NVIM_DATA_DIR="$HOME/AppData/Local/nvim-data"
 else
+    # Linux / MacOS / BSD
     NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
     NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
 fi
 
-echo "Neovim config dir: $NVIM_CONFIG_DIR"
-echo "Neovim data dir:   $NVIM_DATA_DIR"
-
 ###############################################################################
-# Install Node.js + CLI tools on MSYS2 (for language servers, fzf, rg, etc.)
+# Dependency Installation Functions
 ###############################################################################
 
-install_node_for_msys2() {
-    echo "=== Installing Node.js (and npm) via MSYS2 pacman ==="
-    echo "MSYSTEM=${MSYSTEM:-<empty>}"
+install_deps_linux_local() {
+    echo "=== Checking Dependencies for Linux (Local Install) ==="
 
-    if ! command -v pacman >/dev/null 2>&1; then
-        echo "'pacman' not found. This function is intended for MSYS2."
-        return 1
+    # 1. Neovim AppImage (Install if missing)
+    if ! command -v nvim >/dev/null 2>&1; then
+        echo "Neovim not found. Downloading AppImage to ~/.local/bin..."
+        
+        # Determine architecture for correct URL
+        if [ "$UNAME_MACH" = "aarch64" ]; then
+            NVIM_URL="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-arm64.appimage"
+        else
+            NVIM_URL="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage"
+        fi
+
+        echo "Downloading from: $NVIM_URL"
+        
+        # -f fails silently on 404 (prevents downloading error pages)
+        # -L follows redirects
+        if curl -f -L -o "$HOME/.local/bin/nvim" "$NVIM_URL"; then
+            chmod u+x "$HOME/.local/bin/nvim"
+            NVIM_CMD="$HOME/.local/bin/nvim"
+            echo "Neovim installed locally."
+        else
+            echo "Error: Failed to download Neovim. Please check your internet connection or architecture."
+            rm -f "$HOME/.local/bin/nvim"
+            exit 1
+        fi
+    else
+        echo "Neovim found: $(command -v nvim)"
     fi
 
-    local UNAME_MACH
-    UNAME_MACH=$(uname -m 2>/dev/null || echo unknown)
-
-    local NODE_PKG=""
-
-    case "${MSYSTEM:-}" in
-        UCRT64)
-            NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
-            ;;
-        CLANG64)
-            NODE_PKG="mingw-w64-clang-x86_64-nodejs"
-            ;;
-        MINGW64)
-            NODE_PKG="mingw-w64-x86_64-nodejs"
-            ;;
-        MINGW32)
-            NODE_PKG="mingw-w64-i686-nodejs"
-            ;;
-        CLANGARM64)
-            NODE_PKG="mingw-w64-clang-aarch64-nodejs"
-            ;;
-        MSYS|"")
-            echo "MSYSTEM=MSYS: installing a MinGW/UCRT Node.js package anyway."
-            if [ "$UNAME_MACH" = "x86_64" ]; then
-                NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
-            elif [ "$UNAME_MACH" = "aarch64" ]; then
-                NODE_PKG="mingw-w64-clang-aarch64-nodejs"
-            else
-                echo "Unknown architecture '$UNAME_MACH'; falling back to 'nodejs'."
-                NODE_PKG="nodejs"
-            fi
-            ;;
-        *)
-            echo "Unrecognised MSYSTEM='${MSYSTEM}'. Trying UCRT64/CLANG-style Node."
-            if [ "$UNAME_MACH" = "x86_64" ]; then
-                NODE_PKG="mingw-w64-ucrt-x86_64-nodejs"
-            elif [ "$UNAME_MACH" = "aarch64" ]; then
-                NODE_PKG="mingw-w64-clang-aarch64-nodejs"
-            else
-                NODE_PKG="nodejs"
-            fi
-            ;;
-    esac
-
-    echo "Installing package '$NODE_PKG'..."
-    set +e
-    pacman -Sy --needed --noconfirm "$NODE_PKG"
-    status=$?
-    set -e
-
-    if [ $status -ne 0 ]; then
-        echo "pacman failed to install '$NODE_PKG' (exit $status)."
-        echo "Check available Node packages with:"
-        echo "  pacman -Ss nodejs"
-        return $status
+    # 2. Node.js (Verify existence)
+    if ! command -v node >/dev/null 2>&1; then
+        echo "Node.js not found. Installing locally (v20.18.0 LTS)..."
+        local NODE_VER="v20.18.0"
+        local NODE_DIST="node-$NODE_VER-linux-x64"
+        local NODE_URL="https://nodejs.org/dist/$NODE_VER/$NODE_DIST.tar.xz"
+        
+        curl -L -o "/tmp/$NODE_DIST.tar.xz" "$NODE_URL"
+        tar -xf "/tmp/$NODE_DIST.tar.xz" -C "$HOME/.local/share"
+        
+        ln -sf "$HOME/.local/share/$NODE_DIST/bin/node" "$HOME/.local/bin/node"
+        ln -sf "$HOME/.local/share/$NODE_DIST/bin/npm" "$HOME/.local/bin/npm"
+        ln -sf "$HOME/.local/share/$NODE_DIST/bin/npx" "$HOME/.local/bin/npx"
+        
+        rm "/tmp/$NODE_DIST.tar.xz"
+        echo "Node.js installed locally."
+    else
+        echo "Node.js found: $(command -v node)"
     fi
 
-    echo "Node.js install complete. Detected versions (if on PATH):"
-    command -v node && node --version || echo "node not on PATH"
-    command -v npm && npm --version || echo "npm not on PATH"
+    # 3. Ripgrep (Verify existence)
+    if ! command -v rg >/dev/null 2>&1; then
+        echo "Ripgrep (rg) not found. Installing locally..."
+        local RG_VER="14.1.0"
+        local RG_DIST="ripgrep-$RG_VER-x86_64-unknown-linux-musl"
+        local RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/$RG_VER/$RG_DIST.tar.gz"
+        
+        curl -L -o "/tmp/rg.tar.gz" "$RG_URL"
+        tar -xf "/tmp/rg.tar.gz" -C "/tmp"
+        mv "/tmp/$RG_DIST/rg" "$HOME/.local/bin/rg"
+        rm -rf "/tmp/rg.tar.gz" "/tmp/$RG_DIST"
+        echo "Ripgrep installed locally."
+    else
+        echo "Ripgrep found: $(command -v rg)"
+    fi
+
+    # 4. FZF (Verify existence)
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "FZF not found. Installing locally..."
+        if [ -d "$HOME/.fzf" ]; then rm -rf "$HOME/.fzf"; fi
+        git clone --depth 1 https://github.com/junegunn/fzf.git "$HOME/.fzf"
+        "$HOME/.fzf/install" --bin --no-key-bindings --no-completion --no-update-rc
+        ln -sf "$HOME/.fzf/bin/fzf" "$HOME/.local/bin/fzf"
+        echo "FZF installed locally."
+    else
+        echo "FZF found: $(command -v fzf)"
+    fi
 }
 
-install_cli_tools_for_msys2() {
-    echo "=== Installing CLI tools (fzf, ripgrep, findutils) via MSYS2 pacman ==="
+###############################################################################
+# Run Environment Setup
+###############################################################################
 
-    if ! command -v pacman >/dev/null 2>&1; then
-        echo "'pacman' not found. This function is intended for MSYS2."
-        return 1
-    fi
-
-    local pkgs=(
-        mingw-w64-ucrt-x86_64-fzf
-        mingw-w64-ucrt-x86_64-ripgrep
-        findutils
-    )
-
-    pacman -Sy --needed --noconfirm "${pkgs[@]}"
-}
-
-if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
-    install_node_for_msys2
-    install_cli_tools_for_msys2
+if [[ "$UNAME_STR" == "linux" ]]; then
+    install_deps_linux_local
 fi
 
-###############################################################################
-# Helper functions
-###############################################################################
-
-create_directory() {
-    local directory="$1"
-    if ! mkdir -p "$directory"; then
-        echo "Failed to create directory \"$directory\"."
-        return 1
-    else
-        echo "Directory \"$directory\" created successfully."
-    fi
-}
-
-create_file() {
-    local file="$1"
-    if ! echo "" >"$file"; then
-        echo "Failed to create file \"$file\"."
-        return 1
-    else
-        echo "File \"$file\" created successfully."
-    fi
-}
-
-add_to_file() {
-    local file="$1"
-    local edits="$2"
-
-    if ! {
-        cat >>"$file" <<EOF
-$edits
-EOF
-    }; then
-        echo "Failed to append to file \"$file\"."
-        return 1
-    fi
-}
+# Final Check
+if ! command -v nvim >/dev/null 2>&1; then
+    echo "Critical: Neovim binary still not found in PATH."
+    exit 1
+fi
 
 ###############################################################################
 # Clone arturgoms/nvim as config
@@ -184,6 +154,14 @@ if [[ -d "$NVIM_CONFIG_DIR" ]]; then
     echo "Removing existing config dir: $NVIM_CONFIG_DIR"
     rm -rf "$NVIM_CONFIG_DIR"
 fi
+
+# Helper functions
+create_directory() { mkdir -p "$1"; }
+create_file() { echo "" >"$1"; }
+add_to_file() { cat >>"$1" <<EOF
+$2
+EOF
+}
 
 create_directory "$NVIM_CONFIG_DIR"
 git clone --depth 1 "$REPO_URL" "$NVIM_CONFIG_DIR"
@@ -241,14 +219,14 @@ for f in $AUTO_FILES; do
 done
 
 ###############################################################################
-# Patch lazy-plugins.lua: add nvim-nio and moonlight colorscheme
+# Patch lazy-plugins.lua: add moonlight, nvim-nio, and extra plugins
 ###############################################################################
 
 LAZY_PLUGINS_FILE="$NVIM_CONFIG_DIR/lua/lazy-plugins.lua"
-if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
+if [[ -f "$LAZY_PLUGINS_FILE" ]] && ! grep -q 'shaunsingh/moonlight.nvim' "$LAZY_PLUGINS_FILE" 2>/dev/null; then
     tmp="${LAZY_PLUGINS_FILE}.tmp"
     awk '
-      # After custom.plugins.debug, inject moonlight + nvim-nio (if not already there)
+      # After custom.plugins.debug, inject moonlight, nvim-nio, and extra plugins
       /require .custom.plugins.debug/ && !done {
         print
         print "    {"
@@ -265,6 +243,17 @@ if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
         print "      end,"
         print "    },"
         print "    { \"nvim-neotest/nvim-nio\" },"
+        print "    { \"theprimeagen/harpoon\" },"
+        print "    { \"mbbill/undotree\" },"
+        print "    { \"tpope/vim-fugitive\" },"
+        print "    { \"hrsh7th/nvim-cmp\" },"
+        print "    { \"hrsh7th/cmp-nvim-lsp\" },"
+        print "    { \"hrsh7th/cmp-buffer\" },"
+        print "    { \"hrsh7th/cmp-path\" },"
+        print "    { \"saadparwaiz1/cmp_luasnip\" },"
+        print "    { \"hrsh7th/cmp-nvim-lua\" },"
+        print "    { \"L3MON4D3/LuaSnip\" },"
+        print "    { \"rafamadriz/friendly-snippets\" },"
         done=1
         next
       }
@@ -324,10 +313,8 @@ vim.keymap.set('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
 "
 add_to_file "$REMAP_FILEPATH" "$CONTENT"
 
-# Modern LSP setup using vim.lsp.config + mason-lspconfig v2
+# Modern LSP setup
 CONTENT="
--- Minimal modern LSP setup using vim.lsp.config and mason-lspconfig v2
-
 local capabilities = vim.lsp.protocol.make_client_capabilities()
 capabilities = require('cmp_nvim_lsp').default_capabilities(capabilities)
 
@@ -356,20 +343,9 @@ vim.lsp.config.lua_ls = {
   },
 }
 
-vim.lsp.config.pyright = {
-  capabilities = capabilities,
-  on_attach = on_attach,
-}
-
-vim.lsp.config.rust_analyzer = {
-  capabilities = capabilities,
-  on_attach = on_attach,
-}
-
-vim.lsp.config.elixirls = {
-  capabilities = capabilities,
-  on_attach = on_attach,
-}
+vim.lsp.config.pyright = { capabilities = capabilities, on_attach = on_attach }
+vim.lsp.config.rust_analyzer = { capabilities = capabilities, on_attach = on_attach }
+vim.lsp.config.elixirls = { capabilities = capabilities, on_attach = on_attach }
 
 require('mason').setup()
 require('mason-lspconfig').setup {
@@ -387,7 +363,6 @@ add_to_file "$LSP_CUSTOM_FILE" "$CONTENT"
 
 if [[ -f "$INIT_LUA" ]]; then
     add_to_file "$INIT_LUA" "
--- Load my personal overrides
 require('a_sub_directory.remap')
 require('a_sub_directory.lsp')
 "
@@ -397,15 +372,10 @@ fi
 # Pre-install plugins via lazy.nvim
 ###############################################################################
 
-echo "Running Lazy! sync to install plugins..."
+echo "Running Lazy! sync..."
 set +e
 "$NVIM_CMD" --headless "+Lazy! sync" +qa
-lazy_status=$?
+status=$?
 set -e
 
-if [ $lazy_status -ne 0 ]; then
-    echo "Lazy! sync exited with status $lazy_status."
-    echo "You can open Neovim and run :Lazy sync manually if anything is missing."
-fi
-
-echo "Done. Config from $REPO_URL with your keymaps and LSP layered on top (auto-session disabled)."
+echo "Done. Config installed. Ensure $HOME/.local/bin is in your PATH."
