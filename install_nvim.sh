@@ -5,530 +5,376 @@ set -e
 REPO_URL="https://github.com/arturgoms/nvim"
 
 ###############################################################################
-# Detect Neovim binary
+# Environment & Checks
 ###############################################################################
 
-NVIM_CMD="nvim"
-if [ -x "$HOME/.local/nvim-win64/bin/nvim.exe" ]; then
-    NVIM_CMD="$HOME/.local/nvim-win64/bin/nvim.exe"
-fi
+echo "=== Environment Context ==="
+echo "User: $USER"
+echo "Home: $HOME"
+echo "Current Dir: $(pwd)"
+echo "==========================="
 
-if ! "$NVIM_CMD" --version >/dev/null 2>&1; then
-    echo "Neovim not found or not executable at: $NVIM_CMD"
-    echo "Install Neovim (e.g. to ~/.local/nvim-win64) and re-run this script."
+if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+    echo "CRITICAL ERROR: No C compiler found (gcc/cc). Install gcc to continue."
     exit 1
 fi
 
-echo "Using Neovim: $NVIM_CMD"
+NVIM_CMD="nvim"
+if [ -x "./nvim" ]; then NVIM_CMD="./nvim"; fi
 
-###############################################################################
-# Choose config/data dirs to match Neovim on this OS
-###############################################################################
-
-UNAME_STR=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
-
-if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
-    # Windows (MSYS/Git Bash)
-    NVIM_CONFIG_DIR="$HOME/AppData/Local/nvim"
-    NVIM_DATA_DIR="$HOME/AppData/Local/nvim-data"
-    IS_WINDOWS=1
-else
-    NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
-    NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
-    IS_WINDOWS=0
+if ! "$NVIM_CMD" --version >/dev/null 2>&1; then
+    echo "Neovim not found. Please check PATH."
+    exit 1
 fi
 
-echo "Neovim config dir: $NVIM_CONFIG_DIR"
-echo "Neovim data dir:   $NVIM_DATA_DIR"
+# Paths
+NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
+NVIM_BIN_DIR="$NVIM_DATA_DIR/bin"
 
 ###############################################################################
-# Install Node.js, CLI tools, and Compilers on MSYS2
+# STEP 1: Wipe Data Directory (Mandatory for clean install)
 ###############################################################################
+if [[ -d "$NVIM_DATA_DIR" ]]; then
+    echo "Cleaning existing Neovim data directory..."
+    rm -rf "$NVIM_DATA_DIR"
+fi
+mkdir -p "$NVIM_DATA_DIR"
+mkdir -p "$NVIM_BIN_DIR"
 
-install_node_for_msys2() {
-    echo "=== Installing Node.js (and npm) via MSYS2 pacman ==="
-    echo "MSYSTEM=${MSYSTEM:-<empty>}"
+###############################################################################
+# STEP 2: Install Standalone Node.js v22 (For Copilot)
+###############################################################################
+echo "Checking/Installing standalone Node.js v22..."
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64) NODE_ARCH="x64" ;;
+    aarch64) NODE_ARCH="arm64" ;;
+    *) echo "Unsupported architecture for auto-node install: $ARCH"; exit 1 ;;
+esac
 
-    if ! command -v pacman >/dev/null 2>&1; then
-        echo "'pacman' not found. This function is intended for MSYS2."
-        return 1
-    fi
-
-    local UNAME_MACH
-    UNAME_MACH=$(uname -m 2>/dev/null || echo unknown)
-
-    local PREFIX="mingw-w64-x86_64" # Default fallback
-
-    case "${MSYSTEM:-}" in
-        UCRT64)     PREFIX="mingw-w64-ucrt-x86_64" ;;
-        CLANG64)    PREFIX="mingw-w64-clang-x86_64" ;;
-        MINGW64)    PREFIX="mingw-w64-x86_64" ;;
-        MINGW32)    PREFIX="mingw-w64-i686" ;;
-        CLANGARM64) PREFIX="mingw-w64-clang-aarch64" ;;
-        *)
-             if [ "$UNAME_MACH" = "x86_64" ]; then
-                 PREFIX="mingw-w64-ucrt-x86_64"
-             fi
-             ;;
-    esac
-
-    local NODE_PKG="${PREFIX}-nodejs"
-
-    local TOOLS_PKGS=(
-        "${PREFIX}-fzf"
-        "${PREFIX}-ripgrep"
-        "${PREFIX}-fd"
-        "${PREFIX}-7zip"
-        "${PREFIX}-toolchain"
-        "${PREFIX}-python-pip"
-        "${PREFIX}-go"
-        "${PREFIX}-rust"
-        findutils
-    )
-
-    echo "Installing Node and Tools with prefix: $PREFIX"
-
-    set +e
-    pacman -Sy --needed --noconfirm "$NODE_PKG" "${TOOLS_PKGS[@]}"
-    status=$?
-    set -e
-
-    if [ $status -ne 0 ]; then
-        echo "pacman failed to install some packages. Continuing..."
-    fi
-
-    echo "Node.js install complete. Detected versions (if on PATH):"
-    command -v node && node --version || echo "node not on PATH"
-    command -v npm && npm --version || echo "npm not on PATH"
-}
-
-if [[ "$UNAME_STR" == *"mingw"* ]] || [[ "$UNAME_STR" == *"msys"* ]]; then
-    install_node_for_msys2
-
-    echo "=== Installing Neovim Providers ==="
-    if command -v npm >/dev/null 2>&1; then
-        echo "Installing neovim npm provider..."
-        npm install -g neovim || echo "Failed to install npm neovim provider"
-    fi
-
-    if command -v pip >/dev/null 2>&1; then
-        echo "Installing pynvim python provider..."
-        pip install pynvim || echo "Failed to install pynvim"
-    fi
+NODE_VER="v22.12.0"
+NODE_DIR="$NVIM_DATA_DIR/node-v22"
+if [[ ! -x "$NODE_DIR/bin/node" ]]; then
+    echo "Downloading Node.js..."
+    curl -fLo "/tmp/node.tar.gz" "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-${NODE_ARCH}.tar.gz"
+    mkdir -p "$NODE_DIR"
+    tar -xzf "/tmp/node.tar.gz" -C "$NODE_DIR" --strip-components=1
+    rm "/tmp/node.tar.gz"
 fi
 
 ###############################################################################
-# Helper functions
+# STEP 3: Install Standalone Ripgrep (For Telescope Files)
 ###############################################################################
-
-create_directory() {
-    local directory="$1"
-    if ! mkdir -p "$directory"; then
-        echo "Failed to create directory \"$directory\"."
-        return 1
-    else
-        echo "Directory \"$directory\" created successfully."
-    fi
-}
-
-create_file() {
-    local file="$1"
-    if ! echo "" >"$file"; then
-        echo "Failed to create file \"$file\"."
-        return 1
-    else
-        echo "File \"$file\" created successfully."
-    fi
-}
-
-add_to_file() {
-    local file="$1"
-    local edits="$2"
-
-    if ! {
-        cat >>"$file" <<EOF
-$edits
-EOF
-    }; then
-        echo "Failed to append to file \"$file\"."
-        return 1
-    fi
-}
-
-###############################################################################
-# Clone arturgoms/nvim as config
-###############################################################################
-
-echo "Cloning Neovim config from $REPO_URL into $NVIM_CONFIG_DIR"
-
-if [[ -d "$NVIM_CONFIG_DIR" ]]; then
-    echo "Removing existing config dir: $NVIM_CONFIG_DIR"
-    rm -rf "$NVIM_CONFIG_DIR"
+echo "Checking/Installing standalone Ripgrep (rg)..."
+RG_BIN="$NVIM_BIN_DIR/rg"
+if [[ ! -x "$RG_BIN" ]]; then
+    echo "Downloading Ripgrep..."
+    RG_VER="14.1.0"
+    RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/${RG_VER}/ripgrep-${RG_VER}-${ARCH}-unknown-linux-musl.tar.gz"
+    
+    curl -fLo "/tmp/rg.tar.gz" "$RG_URL"
+    mkdir -p "/tmp/rg_extract"
+    tar -xzf "/tmp/rg.tar.gz" -C "/tmp/rg_extract" --strip-components=1
+    cp "/tmp/rg_extract/rg" "$RG_BIN"
+    rm -rf "/tmp/rg.tar.gz" "/tmp/rg_extract"
+    chmod +x "$RG_BIN"
+    echo "Ripgrep installed to $RG_BIN"
 fi
 
-create_directory "$NVIM_CONFIG_DIR"
+###############################################################################
+# STEP 4: Clone Config
+###############################################################################
+echo "Cloning configuration..."
+if [[ -d "$NVIM_CONFIG_DIR" ]]; then rm -rf "$NVIM_CONFIG_DIR"; fi
+mkdir -p "$NVIM_CONFIG_DIR"
 git clone --depth 1 "$REPO_URL" "$NVIM_CONFIG_DIR"
 
-INIT_LUA="$NVIM_CONFIG_DIR/init.lua"
-
 ###############################################################################
-# FIX: Force Shell to PowerShell/CMD on Windows
+# STEP 5: REPLACE init.lua
 ###############################################################################
+echo "Replacing init.lua..."
 
-if [ "$IS_WINDOWS" -eq 1 ]; then
-    echo "Applying Windows Shell Fix to init.lua..."
-    tmp="${INIT_LUA}.tmp"
-    cat > "$tmp" <<EOF
--- [[ WINDOWS COMPATIBILITY FIX ]]
-if vim.fn.has("win32") == 1 then
-  if vim.fn.executable("pwsh") == 1 then
-    vim.opt.shell = "pwsh"
-    vim.opt.shellcmdflag = "-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command [Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-    vim.opt.shellredir = "2>&1 | Out-File -Encoding UTF8 %s; exit \$LastExitCode"
-    vim.opt.shellpipe = "2>&1 | Out-File -Encoding UTF8 %s; exit \$LastExitCode"
-    vim.opt.shellquote = ""
-    vim.opt.shellxquote = ""
-  else
-    vim.opt.shell = "cmd.exe"
-    vim.opt.shellcmdflag = "/s /c"
-  end
+cat > "$NVIM_CONFIG_DIR/init.lua" <<EOF
+-- [[ PATH INJECTION ]]
+local bin_dir = vim.fn.stdpath("data") .. "/bin"
+vim.env.PATH = bin_dir .. ":" .. vim.env.PATH
+
+-- [[ BOOTSTRAP LAZY.NVIM ]]
+local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
+if not vim.loop.fs_stat(lazypath) then
+  print("Bootstrapping lazy.nvim...")
+  vim.fn.system({
+    "git",
+    "clone",
+    "--filter=blob:none",
+    "https://github.com/folke/lazy.nvim.git",
+    "--branch=stable",
+    lazypath,
+  })
 end
+vim.opt.rtp:prepend(lazypath)
 
+-- [[ LOAD CORE OPTIONS ]]
+require("a_sub_directory.set")
+require("a_sub_directory.remap")
+
+-- [[ SETUP PLUGINS ]]
+require("lazy").setup("lazy-plugins", {
+    install = { missing = true },
+    checker = { enabled = false },
+    change_detection = { notify = false },
+})
+
+-- [[ LOAD LSP CONFIG ]]
+pcall(require, "a_sub_directory.lsp")
 EOF
-    cat "$INIT_LUA" >> "$tmp"
-    mv "$tmp" "$INIT_LUA"
-fi
 
 ###############################################################################
-# Force sessionoptions to the recommended value for auto-session
+# STEP 6: OVERWRITE lazy-plugins.lua (Disable Telescope TS Preview)
 ###############################################################################
-
-if [[ -f "$INIT_LUA" ]]; then
-    tmp="${INIT_LUA}.tmp"
-    {
-        awk 'NR>1 && $0 !~ /sessionoptions/ { print }' "$INIT_LUA"
-        echo 'vim.o.sessionoptions = "blank,buffers,curdir,folds,help,tabpages,winsize,winpos,terminal,localoptions"'
-    } >"$tmp"
-    mv "$tmp" "$INIT_LUA"
-fi
-
-###############################################################################
-# Disable upstream lsp.lsp-setup and use our own LSP config instead
-###############################################################################
-
-if [[ -f "$INIT_LUA" ]]; then
-    tmp="${INIT_LUA}.tmp"
-    awk '
-      /require.*lsp\.lsp-setup/ && !done {
-        print "-- " $0  # comment out the upstream LSP setup
-        done=1
-        next
-      }
-      { print }
-    ' "$INIT_LUA" >"$tmp"
-    mv "$tmp" "$INIT_LUA"
-fi
-
-###############################################################################
-# Disable auto-session plugin (set enabled = false in its lazy spec)
-###############################################################################
-
-AUTO_FILES=$(grep -rl 'rmagatti/auto-session' "$NVIM_CONFIG_DIR/lua" 2>/dev/null || true)
-for f in $AUTO_FILES; do
-    echo "Disabling auto-session in $f"
-    tmp="${f}.tmp"
-    awk '
-      /"rmagatti\/auto-session"/ && !done {
-        print $0
-        print "    enabled = false,"
-        done=1
-        next
-      }
-      { print }
-    ' "$f" >"$tmp"
-    mv "$tmp" "$f"
-done
-
-###############################################################################
-# NUKE Existing Copilot Configs
-###############################################################################
-
-echo "Disabling upstream Copilot configurations..."
-grep -rl "zbirenbaum/copilot.lua" "$NVIM_CONFIG_DIR/lua" | while read -r file; do
-    if [[ "$(basename "$file")" == "lazy-plugins.lua" ]]; then
-        continue
-    fi
-    echo "  - Emptying conflicting file: $file"
-    echo "return {}" > "$file"
-done
-
-###############################################################################
-# Patch lazy-plugins.lua
-###############################################################################
+echo "Generating fresh plugin list..."
 
 LAZY_PLUGINS_FILE="$NVIM_CONFIG_DIR/lua/lazy-plugins.lua"
-if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
-    tmp="${LAZY_PLUGINS_FILE}.tmp"
-    awk '
-      /require .custom.plugins.debug/ && !done {
-        print
-        print "    -- [[ CUSTOM PLUGINS INJECTION ]]"
-        print "    {"
-        print "      \"shaunsingh/moonlight.nvim\","
-        print "      lazy = false,"
-        print "      priority = 1000,"
-        print "      config = function()"
-        print "        vim.g.moonlight_italic_comments = true"
-        print "        vim.g.moonlight_italic_keywords = true"
-        print "        vim.g.moonlight_italic_functions = true"
-        print "        vim.g.moonlight_contrast = true"
-        print "        vim.g.moonlight_disable_background = false"
-        print "        require(\"moonlight\").set()"
-        print "      end,"
-        print "    },"
 
-        print "    -- [[ COPILOT (Clean Single Config) ]]"
-        print "    {"
-        print "      \"zbirenbaum/copilot.lua\","
-        print "      cmd = \"Copilot\","
-        print "      event = \"InsertEnter\","
-        print "      config = function()"
-        print "        require(\"copilot\").setup({"
-        print "          suggestion = {"
-        print "            enabled = true,"
-        print "            auto_trigger = true,"
-        print "            keymap = {"
-        print "              accept = \"<M-l>\","
-        print "              next = \"<M-]>\","
-        print "              prev = \"<M-[\","
-        print "              dismiss = \"<C-]>\","
-        print "            },"
-        print "          },"
-        print "          panel = { enabled = false },"
-        print "        })"
-        print "      end,"
-        print "    },"
+cat > "$LAZY_PLUGINS_FILE" <<EOF
+return {
+    -- [[ MOONLIGHT THEME ]]
+    {
+      "shaunsingh/moonlight.nvim",
+      lazy = false,
+      priority = 1000,
+      config = function()
+        vim.g.moonlight_italic_comments = true
+        vim.g.moonlight_italic_keywords = true
+        vim.g.moonlight_italic_functions = true
+        vim.g.moonlight_contrast = true
+        vim.g.moonlight_disable_background = false
+        require("moonlight").set()
+      end,
+    },
 
-        print "    { \"nvim-neotest/nvim-nio\" },"
-        print "    { \"theprimeagen/harpoon\" },"
-        print "    { \"mbbill/undotree\" },"
-        print "    { \"tpope/vim-fugitive\" },"
-        print "    { \"hrsh7th/nvim-cmp\" },"
-        print "    { \"hrsh7th/cmp-nvim-lsp\" },"
-        print "    { \"hrsh7th/cmp-buffer\" },"
-        print "    { \"hrsh7th/cmp-path\" },"
-        print "    { \"saadparwaiz1/cmp_luasnip\" },"
-        print "    { \"hrsh7th/cmp-nvim-lua\" },"
-        print "    { \"L3MON4D3/LuaSnip\" },"
-        print "    { \"rafamadriz/friendly-snippets\" },"
-        done=1
-        next
-      }
-      { print }
-    ' "$LAZY_PLUGINS_FILE" >"$tmp"
-    mv "$tmp" "$LAZY_PLUGINS_FILE"
-fi
+    -- [[ TREESITTER ]]
+    {
+        "nvim-treesitter/nvim-treesitter",
+        lazy = false,
+        priority = 900,
+        config = function()
+            local status_ok, configs = pcall(require, "nvim-treesitter.configs")
+            if not status_ok then return end
+            configs.setup({
+                ensure_installed = {}, 
+                sync_install = false,
+                auto_install = false,
+                highlight = { enable = true },
+            })
+        end,
+    },
+
+    -- [[ TELESCOPE ]]
+    {
+        "nvim-telescope/telescope.nvim",
+        branch = "0.1.x",
+        dependencies = { "nvim-lua/plenary.nvim", "nvim-treesitter/nvim-treesitter" },
+        config = function()
+            local telescope = require("telescope")
+            
+            telescope.setup({
+                defaults = {
+                    file_ignore_patterns = { ".git/", "node_modules" },
+                    preview = {
+                        -- CRITICAL: Disable Telescope's own treesitter previewer.
+                        -- It uses broken functions (is_enabled).
+                        -- We fall back to standard syntax highlighting, which 
+                        -- is safe and still colorful.
+                        treesitter = false
+                    },
+                },
+            })
+        end
+    },
+
+    -- [[ COPILOT ]]
+    {
+      "zbirenbaum/copilot.lua",
+      cmd = "Copilot",
+      event = "InsertEnter",
+      config = function()
+        local node_bin = vim.fn.stdpath("data") .. "/node-v22/bin/node"
+        require("copilot").setup({
+          copilot_node_command = vim.fn.executable(node_bin) == 1 and node_bin or "node",
+          suggestion = {
+            enabled = true,
+            auto_trigger = true,
+            keymap = {
+              accept = "<M-l>",
+              next = "<M-]>",
+              prev = "<M-[>",
+              dismiss = "<C-]>",
+            },
+          },
+          panel = { enabled = false },
+        })
+      end,
+    },
+
+    -- [[ STANDARD PLUGINS ]]
+    { "nvim-neotest/nvim-nio" },
+    { "theprimeagen/harpoon" },
+    { "mbbill/undotree" },
+    { "tpope/vim-fugitive" },
+
+    -- [[ LSP STACK ]]
+    { "williamboman/mason.nvim" },
+    { "williamboman/mason-lspconfig.nvim" },
+    { "neovim/nvim-lspconfig" },
+    { "hrsh7th/nvim-cmp" },
+    { "hrsh7th/cmp-nvim-lsp" },
+    { "hrsh7th/cmp-buffer" },
+    { "hrsh7th/cmp-path" },
+    { "saadparwaiz1/cmp_luasnip" },
+    { "hrsh7th/cmp-nvim-lua" },
+    { "L3MON4D3/LuaSnip" },
+    { "rafamadriz/friendly-snippets" },
+}
+EOF
 
 ###############################################################################
-# Create our overrides directory and files
+# STEP 7: Inject Overrides
 ###############################################################################
 
 A_SUB_DIR="$NVIM_CONFIG_DIR/lua/a_sub_directory"
-create_directory "$A_SUB_DIR"
-
+mkdir -p "$A_SUB_DIR"
 REMAP_FILEPATH="$A_SUB_DIR/remap.lua"
 SET_FILEPATH="$A_SUB_DIR/set.lua"
 LSP_CUSTOM_FILE="$A_SUB_DIR/lsp.lua"
 
-create_file "$REMAP_FILEPATH"
-create_file "$SET_FILEPATH"
-create_file "$LSP_CUSTOM_FILE"
-
-# [[ PRIMEAGEN SET CONFIG ]]
-CONTENT="
-vim.opt.guicursor = \"\"
-
+# [[ SET CONFIG ]]
+cat > "$SET_FILEPATH" <<EOF
+vim.opt.guicursor = ""
 vim.opt.nu = true
 vim.opt.relativenumber = true
-
 vim.opt.tabstop = 4
 vim.opt.softtabstop = 4
 vim.opt.shiftwidth = 4
 vim.opt.expandtab = true
-
 vim.opt.smartindent = true
-
 vim.opt.wrap = false
-
 vim.opt.swapfile = false
 vim.opt.backup = false
-
-local home = os.getenv(\"HOME\") or os.getenv(\"USERPROFILE\") or \"\"
-local undodir = home .. \"/.vim/undodir\"
-
+local undodir = vim.fn.stdpath("data") .. "/undodir"
 vim.opt.undodir = undodir
 vim.opt.undofile = true
-
-if vim.fn.isdirectory(undodir) == 0 then
-    vim.fn.mkdir(undodir, \"p\")
-end
-
+if vim.fn.isdirectory(undodir) == 0 then vim.fn.mkdir(undodir, "p") end
 vim.opt.hlsearch = false
 vim.opt.incsearch = true
-
 vim.opt.termguicolors = true
-
 vim.opt.scrolloff = 8
-vim.opt.signcolumn = \"yes\"
-vim.opt.isfname:append(\"@-@\")
-
+vim.opt.signcolumn = "yes"
+vim.opt.isfname:append("@-@")
 vim.opt.updatetime = 50
+vim.opt.colorcolumn = "80"
+EOF
 
-vim.opt.colorcolumn = \"80\"
-"
-add_to_file "$SET_FILEPATH" "$CONTENT"
+# [[ REMAP CONFIG ]]
+cat > "$REMAP_FILEPATH" <<EOF
+vim.g.mapleader = " "
+vim.keymap.set("n", "<leader>pv", vim.cmd.Ex)
 
-# [[ PRIMEAGEN REMAP CONFIG (Updated with <leader>vd) ]]
-CONTENT="
-vim.g.mapleader = \" \"
-vim.keymap.set(\"n\", \"<leader>pv\", vim.cmd.Ex)
+-- Telescope lazy load
+vim.keymap.set('n', '<leader>pe', function() require('telescope.builtin').find_files() end, { desc = 'Find Files' })
+vim.keymap.set('n', '<leader>pw', function() require('telescope.builtin').grep_string() end, { desc = 'Search Word' })
+vim.keymap.set('n', '<leader>ps', function() require('telescope.builtin').live_grep() end, { desc = 'Live Grep' })
 
--- [[ TELESCOPE ]]
-local builtin = require('telescope.builtin')
-vim.keymap.set('n', '<leader>pe', builtin.find_files, { desc = 'Find Files' })
-vim.keymap.set('n', '<leader>pw', builtin.grep_string, { desc = 'Search Word' })
-vim.keymap.set('n', '<leader>ps', builtin.live_grep, { desc = 'Live Grep' })
+vim.keymap.set("n", "<leader>vd", function() vim.diagnostic.open_float() end, { desc = "View Diagnostic" })
+vim.keymap.set("n", "[d", function() vim.diagnostic.goto_next() end, { desc = "Next Diagnostic" })
+vim.keymap.set("n", "]d", function() vim.diagnostic.goto_prev() end, { desc = "Prev Diagnostic" })
 
--- [[ DIAGNOSTICS (Added to fix <leader>vd splitting terminal) ]]
-vim.keymap.set(\"n\", \"<leader>vd\", function() vim.diagnostic.open_float() end, { desc = \"View Diagnostic\" })
-vim.keymap.set(\"n\", \"[d\", function() vim.diagnostic.goto_next() end, { desc = \"Next Diagnostic\" })
-vim.keymap.set(\"n\", \"]d\", function() vim.diagnostic.goto_prev() end, { desc = \"Prev Diagnostic\" })
+vim.keymap.set("v", "J", ":m '>+1<CR>gv=gv")
+vim.keymap.set("v", "K", ":m '<-2<CR>gv=gv")
+vim.keymap.set("n", "J", "mzJ\`z")
+vim.keymap.set("n", "<C-d>", "<C-d>zz")
+vim.keymap.set("n", "<C-u>", "<C-u>zz")
+vim.keymap.set("n", "n", "nzzzv")
+vim.keymap.set("n", "N", "Nzzzv")
+vim.keymap.set("x", "<leader>p", [["_dP]])
+vim.keymap.set({ "n", "v" }, "<leader>y", [["+y]])
+vim.keymap.set("n", "<leader>Y", [["+Y]])
+vim.keymap.set({ "n", "v" }, "<leader>d", "\"_d")
+vim.keymap.set("i", "<C-c>", "<Esc>")
+vim.keymap.set("n", "Q", "<nop>")
+vim.keymap.set("n", "<C-f>", "<cmd>silent !tmux neww tmux-sessionizer<CR>")
+vim.keymap.set("n", "<leader>f", vim.lsp.buf.format)
+vim.keymap.set("n", "<C-k>", "<cmd>cnext<CR>zz")
+vim.keymap.set("n", "<C-j>", "<cmd>cprev<CR>zz")
+vim.keymap.set("n", "<leader>k", "<cmd>lnext<CR>zz")
+vim.keymap.set("n", "<leader>j", "<cmd>lprev<CR>zz")
+vim.keymap.set("n", "<leader>s", [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
+vim.keymap.set("n", "<leader>x", "<cmd>!chmod +x %<CR>", { silent = true })
+vim.keymap.set("n", "<leader><leader>", function() vim.cmd("so") end)
+EOF
 
--- [[ PRIMEAGEN MAPS ]]
-vim.keymap.set(\"v\", \"J\", \":m '>+1<CR>gv=gv\")
-vim.keymap.set(\"v\", \"K\", \":m '<-2<CR>gv=gv\")
-
-vim.keymap.set(\"n\", \"J\", \"mzJ\`z\")
-vim.keymap.set(\"n\", \"<C-d>\", \"<C-d>zz\")
-vim.keymap.set(\"n\", \"<C-u>\", \"<C-u>zz\")
-vim.keymap.set(\"n\", \"n\", \"nzzzv\")
-vim.keymap.set(\"n\", \"N\", \"Nzzzv\")
-
-vim.keymap.set(\"n\", \"<leader>vwm\", function()
-    require(\"vim-with-me\").StartVimWithMe()
-end)
-vim.keymap.set(\"n\", \"<leader>svwm\", function()
-    require(\"vim-with-me\").StopVimWithMe()
-end)
-
-vim.keymap.set(\"x\", \"<leader>p\", [[\"_dP]])
-
-vim.keymap.set({ \"n\", \"v\" }, \"<leader>y\", [[\"+y]])
-vim.keymap.set(\"n\", \"<leader>Y\", [[\"+Y]])
-
-vim.keymap.set({ \"n\", \"v\" }, \"<leader>d\", \"\\\"_d\")
-
-vim.keymap.set(\"i\", \"<C-c>\", \"<Esc>\")
-
-vim.keymap.set(\"n\", \"Q\", \"<nop>\")
-vim.keymap.set(\"n\", \"<C-f>\", \"<cmd>silent !tmux neww tmux-sessionizer<CR>\")
-vim.keymap.set(\"n\", \"<leader>f\", vim.lsp.buf.format)
-
-vim.keymap.set(\"n\", \"<C-k>\", \"<cmd>cnext<CR>zz\")
-vim.keymap.set(\"n\", \"<C-j>\", \"<cmd>cprev<CR>zz\")
-vim.keymap.set(\"n\", \"<leader>k\", \"<cmd>lnext<CR>zz\")
-vim.keymap.set(\"n\", \"<leader>j\", \"<cmd>lprev<CR>zz\")
-
-vim.keymap.set(\"n\", \"<leader>s\", [[:%s/\\<<C-r><C-w>\\>/<C-r><C-w>/gI<Left><Left><Left>]])
-vim.keymap.set(\"n\", \"<leader>x\", \"<cmd>!chmod +x %<CR>\", { silent = true })
-
-vim.keymap.set(
-    \"n\",
-    \"<leader>ee\",
-    \"oif err != nil {<CR>}<Esc>Oreturn err<Esc>\"
-)
-
-vim.keymap.set(\"n\", \"<leader>mr\", function()
-    require(\"cellular-automaton\").start_animation(\"make_it_rain\")
-end)
-
-vim.keymap.set(\"n\", \"<leader><leader>\", function()
-    vim.cmd(\"so\")
-end)
-"
-add_to_file "$REMAP_FILEPATH" "$CONTENT"
-
-# Modern LSP setup
-CONTENT="
+# [[ LSP CONFIG ]]
+cat > "$LSP_CUSTOM_FILE" <<EOF
 local capabilities = vim.lsp.protocol.make_client_capabilities()
 local status_ok, cmp_nvim_lsp = pcall(require, 'cmp_nvim_lsp')
-if status_ok then
-    capabilities = cmp_nvim_lsp.default_capabilities(capabilities)
-end
-
+if status_ok then capabilities = cmp_nvim_lsp.default_capabilities(capabilities) end
 local function on_attach(client, bufnr)
   local nmap = function(keys, func, desc)
     if desc then desc = 'LSP: ' .. desc end
     vim.keymap.set('n', keys, func, { buffer = bufnr, desc = desc })
   end
-
   nmap('gd', vim.lsp.buf.definition, 'Goto Definition')
   nmap('K', vim.lsp.buf.hover, 'Hover')
   nmap('<leader>vca', vim.lsp.buf.code_action, 'Code Action')
   nmap('<leader>vrn', vim.lsp.buf.rename, 'Rename')
-  -- We now set [d and ]d globally in remap.lua, but setting here locally is fine too (redundancy is okay)
 end
-
-vim.lsp.config.lua_ls = {
-  capabilities = capabilities,
-  on_attach = on_attach,
-  settings = {
-    Lua = {
-      workspace = { checkThirdParty = false },
-      telemetry = { enable = false },
-    },
-  },
-}
-
+vim.lsp.config.lua_ls = { capabilities = capabilities, on_attach = on_attach, settings = { Lua = { workspace = { checkThirdParty = false }, telemetry = { enable = false } } } }
 vim.lsp.config.pyright = { capabilities = capabilities, on_attach = on_attach }
 vim.lsp.config.rust_analyzer = { capabilities = capabilities, on_attach = on_attach }
 vim.lsp.config.elixirls = { capabilities = capabilities, on_attach = on_attach }
-
 require('mason').setup()
-require('mason-lspconfig').setup {
-  ensure_installed = { 'lua_ls', 'pyright', 'rust_analyzer', 'elixirls' },
-  automatic_installation = true,
-}
-
+require('mason-lspconfig').setup { ensure_installed = { 'lua_ls', 'pyright', 'rust_analyzer', 'elixirls' }, automatic_installation = true }
 vim.lsp.enable({ 'lua_ls', 'pyright', 'rust_analyzer', 'elixirls' })
-"
-add_to_file "$LSP_CUSTOM_FILE" "$CONTENT"
+EOF
 
 ###############################################################################
-# Ensure our overrides are required last from init.lua
+# STEP 8: Automated Install Execution
 ###############################################################################
 
-if [[ -f "$INIT_LUA" ]]; then
-    add_to_file "$INIT_LUA" "
-require('a_sub_directory.set')
-require('a_sub_directory.remap')
-require('a_sub_directory.lsp')
-"
-fi
-
-###############################################################################
-# Pre-install plugins via lazy.nvim
-###############################################################################
-
-echo "Running Lazy! sync to install plugins and updating TreeSitter..."
+echo "========================================="
+echo "PHASE 1: Plugin Installation (Lazy.nvim)"
+echo "========================================="
 set +e
-"$NVIM_CMD" --headless "+Lazy! sync" "+TSUpdate" +qa
-lazy_status=$?
+"$NVIM_CMD" --headless "+Lazy! sync" +qa
 set -e
 
-if [ $lazy_status -ne 0 ]; then
-    echo "Lazy! sync exited with status $lazy_status."
-    echo "You can open Neovim and run :Lazy sync manually if anything is missing."
-fi
+echo "========================================="
+echo "PHASE 2: Synchronous Treesitter Compilation"
+echo "========================================="
 
-echo "Done. <leader>vd now correctly opens diagnostic float (instead of splitting)."
+TS_BOOTSTRAP_FILE="$NVIM_CONFIG_DIR/ts_bootstrap.lua"
+cat > "$TS_BOOTSTRAP_FILE" <<EOF
+local ts_path = "$NVIM_DATA_DIR/lazy/nvim-treesitter"
+if vim.fn.isdirectory(ts_path) == 0 then vim.cmd("q") else vim.opt.runtimepath:prepend(ts_path) end
+
+local status_ok, ts_install = pcall(require, "nvim-treesitter.install")
+if not status_ok then
+    vim.cmd("packadd nvim-treesitter")
+    ts_install = require("nvim-treesitter.install")
+end
+
+local langs = { "c", "lua", "vim", "vimdoc", "query", "python", "go", "rust" }
+print("Installing parsers synchronously: " .. table.concat(langs, ", "))
+require("nvim-treesitter.install").compilers = { "cc", "gcc", "clang", "cl" }
+pcall(function() ts_install.ensure_installed_sync(langs) end)
+print("Installation done.")
+vim.cmd("q")
+EOF
+
+"$NVIM_CMD" --headless -c "luafile $TS_BOOTSTRAP_FILE"
+rm "$TS_BOOTSTRAP_FILE"
+
+echo "========================================="
+echo "INSTALLATION SUCCESSFULLY COMPLETED"
+echo "========================================="
