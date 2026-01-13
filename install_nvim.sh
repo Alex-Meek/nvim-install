@@ -137,7 +137,7 @@ find "$NVIM_CONFIG_DIR/lua" -type f -name "*.lua" -exec grep -l "zbirenbaum/copi
 done
 
 ###############################################################################
-# Patch lazy-plugins.lua - FORCE EAGER LOADING for completion stack
+# Patch lazy-plugins.lua
 ###############################################################################
 
 LAZY_PLUGINS_FILE="$NVIM_CONFIG_DIR/lua/lazy-plugins.lua"
@@ -153,7 +153,7 @@ if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
         print "    { \"mbbill/undotree\" },"
         print "    { \"tpope/vim-fugitive\" },"
         print "    { \"nvim-treesitter/nvim-treesitter\", commit = \"d5a5809\", build = \":TSUpdate\" },"
-        print "    { \"L3MON4D3/LuaSnip\", lazy = false, dependencies = {\"rafamadriz/friendly-snippets\"} },"
+        print "    { \"L3MON4D3/LuaSnip\", lazy = false },"
         print "    { \"rafamadriz/friendly-snippets\", lazy = false },"
         print "    { \"hrsh7th/nvim-cmp\", lazy = false, event = \"InsertEnter\" },"
         print "    { \"hrsh7th/cmp-nvim-lsp\", lazy = false },"
@@ -161,8 +161,8 @@ if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
         print "    { \"hrsh7th/cmp-path\", lazy = false },"
         print "    { \"saadparwaiz1/cmp_luasnip\", lazy = false },"
         print "    { \"hrsh7th/cmp-nvim-lua\", lazy = false },"
-        print "    { \"williamboman/mason.nvim\", lazy = false, config = function() require(\"mason\").setup() end },"
-        print "    { \"williamboman/mason-lspconfig.nvim\", lazy = false, dependencies = {\"mason.nvim\"} },"
+        print "    { \"williamboman/mason.nvim\", lazy = false },"
+        print "    { \"williamboman/mason-lspconfig.nvim\", lazy = false },"
         print "    { \"neovim/nvim-lspconfig\", commit = \"9eff3cf\", lazy = false },"
         done=1
         next
@@ -313,7 +313,7 @@ vim.api.nvim_create_autocmd("User", {
 })
 EOF
 
-cat > "$A_SUB_DIR/lsp.lua" <<'EOF'
+cat > "$A_SUB_DIR/lsp.lua" <<'EOFFILE'
 local M = {}
 
 local function get_capabilities()
@@ -347,6 +347,7 @@ function M.setup_lsp()
     return false
   end
 
+  require('mason').setup()
   require('mason-lspconfig').setup({
     ensure_installed = {'lua_ls','pyright','rust_analyzer'},
     automatic_installation = true,
@@ -354,7 +355,7 @@ function M.setup_lsp()
 
   local capabilities = get_capabilities()
 
-  lspconfig['lua_ls'].setup({
+  lspconfig.lua_ls.setup({
     capabilities = capabilities,
     on_attach = on_attach,
     settings = {
@@ -366,16 +367,16 @@ function M.setup_lsp()
     }
   })
 
-  lspconfig['pyright'].setup({
+  lspconfig.pyright.setup({
     capabilities = capabilities,
     on_attach = on_attach,
   })
 
-  lspconfig['rust_analyzer'].setup({
+  lspconfig.rust_analyzer.setup({
     capabilities = capabilities,
     on_attach = on_attach,
     settings = {
-      ['rust-analyzer'] = {
+      ["rust-analyzer"] = {
         checkOnSave = {command = "clippy"},
       }
     }
@@ -389,11 +390,9 @@ function M.setup_cmp()
   local ls_ok, luasnip = pcall(require, 'luasnip')
 
   if not (cmp_ok and ls_ok) then
-    print("CMP or LuaSnip not available")
     return false
   end
 
-  -- Load snippets
   require('luasnip.loaders.from_vscode').lazy_load()
 
   cmp.setup({
@@ -441,30 +440,24 @@ function M.setup_cmp()
     })
   })
 
-  print("CMP setup complete!")
   return true
 end
 
--- Setup immediately, not on LazyDone
 M.setup_cmp()
 
--- Setup LSP after plugins load
 vim.api.nvim_create_autocmd("User", {
   pattern = "LazyDone",
   once = true,
   callback = function()
     vim.schedule(function()
       M.setup_lsp()
-      -- Retry CMP setup in case it failed first time
-      if not M.setup_cmp() then
-        vim.defer_fn(M.setup_cmp, 100)
-      end
+      M.setup_cmp()
     end)
   end,
 })
 
 return M
-EOF
+EOFFILE
 
 cat >> "$INIT_LUA" <<'EOF'
 
@@ -493,17 +486,15 @@ set -e
 echo ""
 echo "✅ Done!"
 echo ""
-echo "Neovim 0.9.x setup complete with autocompletion!"
-echo ""
 echo "Autocompletion keys:"
-echo "  <C-Space>  - Trigger completion"
-echo "  <CR>       - Confirm selection"
-echo "  <Tab>      - Next item / expand snippet"
-echo "  <S-Tab>    - Previous item"
-echo "  <C-e>      - Close completion menu"
+echo "  <C-Space> - Trigger completion"
+echo "  <CR>      - Confirm"
+echo "  <Tab>     - Next item"
+echo "  <S-Tab>   - Previous item"
 echo ""
 echo "Other keys:"
-echo "  <Space>pm  - Open Mason"
-echo "  <Space>pe  - Find files"
-echo "  <Space>ps  - Live grep"
-echo "  gd         - Go
+echo "  <Space>pm - Mason"
+echo "  <Space>pe - Find files"
+echo "  gd        - Go to definition"
+echo "  K         - Hover"
+echo ""
