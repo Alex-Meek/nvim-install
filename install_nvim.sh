@@ -137,7 +137,7 @@ find "$NVIM_CONFIG_DIR/lua" -type f -name "*.lua" -exec grep -l "zbirenbaum/copi
 done
 
 ###############################################################################
-# Patch lazy-plugins.lua - FORCE EAGER LOADING for Mason
+# Patch lazy-plugins.lua - FORCE EAGER LOADING for completion stack
 ###############################################################################
 
 LAZY_PLUGINS_FILE="$NVIM_CONFIG_DIR/lua/lazy-plugins.lua"
@@ -153,17 +153,17 @@ if [[ -f "$LAZY_PLUGINS_FILE" ]]; then
         print "    { \"mbbill/undotree\" },"
         print "    { \"tpope/vim-fugitive\" },"
         print "    { \"nvim-treesitter/nvim-treesitter\", commit = \"d5a5809\", build = \":TSUpdate\" },"
-        print "    { \"hrsh7th/nvim-cmp\" },"
-        print "    { \"hrsh7th/cmp-nvim-lsp\" },"
-        print "    { \"hrsh7th/cmp-buffer\" },"
-        print "    { \"hrsh7th/cmp-path\" },"
-        print "    { \"saadparwaiz1/cmp_luasnip\" },"
-        print "    { \"hrsh7th/cmp-nvim-lua\" },"
-        print "    { \"L3MON4D3/LuaSnip\" },"
-        print "    { \"rafamadriz/friendly-snippets\" },"
+        print "    { \"L3MON4D3/LuaSnip\", lazy = false, dependencies = {\"rafamadriz/friendly-snippets\"} },"
+        print "    { \"rafamadriz/friendly-snippets\", lazy = false },"
+        print "    { \"hrsh7th/nvim-cmp\", lazy = false, event = \"InsertEnter\" },"
+        print "    { \"hrsh7th/cmp-nvim-lsp\", lazy = false },"
+        print "    { \"hrsh7th/cmp-buffer\", lazy = false },"
+        print "    { \"hrsh7th/cmp-path\", lazy = false },"
+        print "    { \"saadparwaiz1/cmp_luasnip\", lazy = false },"
+        print "    { \"hrsh7th/cmp-nvim-lua\", lazy = false },"
         print "    { \"williamboman/mason.nvim\", lazy = false, config = function() require(\"mason\").setup() end },"
         print "    { \"williamboman/mason-lspconfig.nvim\", lazy = false, dependencies = {\"mason.nvim\"} },"
-        print "    { \"neovim/nvim-lspconfig\", commit = \"9eff3cf\" },"
+        print "    { \"neovim/nvim-lspconfig\", commit = \"9eff3cf\", lazy = false },"
         done=1
         next
       }
@@ -204,6 +204,7 @@ vim.opt.scrolloff = 8
 vim.opt.signcolumn = "yes"
 vim.opt.updatetime = 50
 vim.opt.colorcolumn = "80"
+vim.opt.completeopt = "menu,menuone,noselect"
 EOF
 
 cat > "$A_SUB_DIR/remap.lua" <<'EOF'
@@ -334,6 +335,7 @@ local function on_attach(client, bufnr)
   map('K', vim.lsp.buf.hover, 'Hover')
   map('<leader>vca', vim.lsp.buf.code_action, 'Code Action')
   map('<leader>vrn', vim.lsp.buf.rename, 'Rename')
+  map('<C-k>', vim.lsp.buf.signature_help, 'Signature Help')
 end
 
 function M.setup_lsp()
@@ -384,46 +386,79 @@ end
 
 function M.setup_cmp()
   local cmp_ok, cmp = pcall(require, 'cmp')
-  local ls_ok, ls = pcall(require, 'luasnip')
-  if not (cmp_ok and ls_ok) then return false end
+  local ls_ok, luasnip = pcall(require, 'luasnip')
 
+  if not (cmp_ok and ls_ok) then
+    print("CMP or LuaSnip not available")
+    return false
+  end
+
+  -- Load snippets
   require('luasnip.loaders.from_vscode').lazy_load()
 
   cmp.setup({
-    snippet = {expand = function(args) ls.lsp_expand(args.body) end},
+    snippet = {
+      expand = function(args)
+        luasnip.lsp_expand(args.body)
+      end,
+    },
+    window = {
+      completion = cmp.config.window.bordered(),
+      documentation = cmp.config.window.bordered(),
+    },
     mapping = cmp.mapping.preset.insert({
-      ['<C-d>'] = cmp.mapping.scroll_docs(-4),
+      ['<C-b>'] = cmp.mapping.scroll_docs(-4),
       ['<C-f>'] = cmp.mapping.scroll_docs(4),
       ['<C-Space>'] = cmp.mapping.complete(),
-      ['<CR>'] = cmp.mapping.confirm({select=true}),
-      ['<Tab>'] = cmp.mapping(function(fb)
-        if cmp.visible() then cmp.select_next_item()
-        elseif ls.expand_or_jumpable() then ls.expand_or_jump()
-        else fb() end
-      end, {'i','s'}),
-      ['<S-Tab>'] = cmp.mapping(function(fb)
-        if cmp.visible() then cmp.select_prev_item()
-        elseif ls.jumpable(-1) then ls.jump(-1)
-        else fb() end
-      end, {'i','s'}),
+      ['<C-e>'] = cmp.mapping.abort(),
+      ['<CR>'] = cmp.mapping.confirm({select = true}),
+      ['<Tab>'] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.select_next_item()
+        elseif luasnip.expand_or_locally_jumpable() then
+          luasnip.expand_or_jump()
+        else
+          fallback()
+        end
+      end, {'i', 's'}),
+      ['<S-Tab>'] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.select_prev_item()
+        elseif luasnip.locally_jumpable(-1) then
+          luasnip.jump(-1)
+        else
+          fallback()
+        end
+      end, {'i', 's'}),
     }),
-    sources = {
-      {name='nvim_lsp'},
-      {name='luasnip'},
-      {name='buffer'},
-      {name='path'},
-    },
+    sources = cmp.config.sources({
+      { name = 'nvim_lsp' },
+      { name = 'luasnip' },
+      { name = 'nvim_lua' },
+    }, {
+      { name = 'buffer' },
+      { name = 'path' },
+    })
   })
+
+  print("CMP setup complete!")
   return true
 end
 
+-- Setup immediately, not on LazyDone
+M.setup_cmp()
+
+-- Setup LSP after plugins load
 vim.api.nvim_create_autocmd("User", {
   pattern = "LazyDone",
   once = true,
   callback = function()
     vim.schedule(function()
       M.setup_lsp()
-      M.setup_cmp()
+      -- Retry CMP setup in case it failed first time
+      if not M.setup_cmp() then
+        vim.defer_fn(M.setup_cmp, 100)
+      end
     end)
   end,
 })
@@ -458,18 +493,17 @@ set -e
 echo ""
 echo "✅ Done!"
 echo ""
-echo "Neovim 0.9.x compatible setup complete!"
+echo "Neovim 0.9.x setup complete with autocompletion!"
 echo ""
-echo "Key bindings:"
-echo "  <Space>pv  - File explorer"
-echo "  <Space>pe  - Telescope find files"
-echo "  <Space>ps  - Telescope live grep"
+echo "Autocompletion keys:"
+echo "  <C-Space>  - Trigger completion"
+echo "  <CR>       - Confirm selection"
+echo "  <Tab>      - Next item / expand snippet"
+echo "  <S-Tab>    - Previous item"
+echo "  <C-e>      - Close completion menu"
+echo ""
+echo "Other keys:"
 echo "  <Space>pm  - Open Mason"
-echo "  gd         - Go to definition"
-echo "  K          - Hover docs"
-echo ""
-echo "Commands:"
-echo "  :Mason     - LSP server manager"
-echo "  :Lazy      - Plugin manager"
-echo "  :LspInfo   - LSP status"
-echo ""
+echo "  <Space>pe  - Find files"
+echo "  <Space>ps  - Live grep"
+echo "  gd         - Go
