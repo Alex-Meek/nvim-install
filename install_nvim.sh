@@ -499,6 +499,24 @@ vim.keymap.set('n', ']d',         vim.diagnostic.goto_next,  { desc = 'LSP: Next
 vim.keymap.set('n', '<leader>cs', [[:%s/\<<C-r><C-w>\>/<C-r><C-w>/gI<Left><Left><Left>]])
 
 vim.keymap.set('n', '<leader>x', '<cmd>!chmod +x %<CR>', { silent = true })
+
+vim.opt.clipboard = 'unnamedplus'
+
+-- Only override on SSH sessions — local sessions auto-detect fine
+if os.getenv('SSH_TTY') ~= nil then
+  vim.g.clipboard = {
+    name  = 'OSC 52',
+    copy  = {
+      ['+'] = require('vim.ui.clipboard.osc52').copy('+'),
+      ['*'] = require('vim.ui.clipboard.osc52').copy('*'),
+    },
+    paste = {
+      ['+'] = require('vim.ui.clipboard.osc52').paste('+'),
+      ['*'] = require('vim.ui.clipboard.osc52').paste('*'),
+    },
+  }
+end
+
 EOF
 
 ###############################################################################
