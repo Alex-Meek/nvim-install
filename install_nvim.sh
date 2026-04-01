@@ -114,9 +114,6 @@ warn_pwsh() {
 
 ###############################################################################
 # Install npm globals: neovim package + tree-sitter-cli (if GLIBC >= 2.29)
-# - neovim npm package fixes :checkhealth vim.provider Node warning
-# - tree-sitter-cli fixes :checkhealth nvim-treesitter warning
-#   (skipped on RHEL 8 / GLIBC < 2.29 — the prebuilt binary won't run there)
 ###############################################################################
 
 install_npm_globals() {
@@ -132,7 +129,6 @@ install_npm_globals() {
     npm install -g neovim
     set -e
 
-    # Parse the system GLIBC version from ldd
     local version_str major minor
     version_str=$(ldd --version 2>/dev/null | awk 'NR==1{ print $NF }')
     major=$(echo "$version_str" | cut -d. -f1)
@@ -140,10 +136,6 @@ install_npm_globals() {
 
     echo "Detected GLIBC version: ${major}.${minor}"
 
-    # tree-sitter-cli prebuilt binaries require GLIBC >= 2.29.
-    # If GLIBC is too old, uninstall any existing tree-sitter-cli (it may
-    # have been installed via nvm's npm, bypassing a previous GLIBC guard)
-    # so nvim-treesitter cannot find it and falls back to gcc.
     local glibc_ok=true
     if [[ -n "$major" && -n "$minor" ]]; then
         if [[ "$major" -lt 2 ]] || \
@@ -155,7 +147,6 @@ install_npm_globals() {
     if [[ "$glibc_ok" == false ]]; then
         echo "GLIBC ${major}.${minor} < 2.29 — skipping tree-sitter-cli install."
         echo "(Parsers will compile via gcc.)"
-        # Evict any already-installed broken copy
         if command -v tree-sitter >/dev/null 2>&1; then
             echo "Removing existing (broken) tree-sitter-cli..."
             set +e
@@ -179,8 +170,9 @@ install_npm_globals() {
         command -v tree-sitter && tree-sitter --version || true
     fi
 }
+
 ###############################################################################
-# Install pynvim — fixes :checkhealth vim.provider Python warning
+# Install pynvim
 ###############################################################################
 
 install_pynvim() {
@@ -268,23 +260,53 @@ git clone --depth 1 "$REPO_URL" "$NVIM_CONFIG_DIR"
 INIT_LUA="$NVIM_CONFIG_DIR/init.lua"
 
 ###############################################################################
-# FIX: Prepend provider disables + sessionoptions in one pass.
-#
-# vim.opt.runtimepath:prepend is intentionally NOT set here — lazy.nvim resets
-# the rtp when it loads, so the correct mechanism is performance.rtp.paths in
-# the lazy.setup() options (patched in patch_lazy_rocks below).
+# FIX: Prepend PATH fix + provider disables + sessionoptions in one pass.
 ###############################################################################
 
 if [[ -f "$INIT_LUA" ]]; then
     tmp="${INIT_LUA}.tmp"
     {
         cat <<'EOF'
--- Disable unused providers (suppresses :checkhealth warnings)
-vim.g.loaded_perl_provider = 0
-vim.g.loaded_ruby_provider = 0
+-- Ensure node/LSP binaries are on PATH (needed outside interactive shells)
+do
+  local extra = {}
 
--- Session options for auto-session
-vim.o.sessionoptions = "blank,buffers,curdir,folds,help,tabpages,winsize,winpos,terminal,localoptions"
+  local function add_if_has_node(p)
+    if vim.fn.isdirectory(p) == 1
+       and (vim.fn.executable(p .. "/node") == 1
+            or vim.fn.executable(p .. "/node.exe") == 1)
+    then
+      extra[#extra + 1] = p
+    end
+  end
+
+  local local_bin = vim.fn.expand("~/.local/bin")
+  if vim.fn.isdirectory(local_bin) == 1 then
+    extra[#extra + 1] = local_bin
+  end
+
+  -- Mason-managed node installations
+  for _, p in ipairs(vim.fn.glob(
+      vim.fn.stdpath("data") .. "/node-*/bin", false, true)) do
+    add_if_has_node(p)
+  end
+
+  -- MSYS2 / common Unix node locations
+  for _, p in ipairs({
+    "/ucrt64/bin",
+    "/mingw64/bin",
+    "/mingw32/bin",
+    "/clang64/bin",
+    "/usr/bin",
+    "/usr/local/bin",
+  }) do
+    add_if_has_node(p)
+  end
+
+  if #extra > 0 then
+    vim.env.PATH = table.concat(extra, ":") .. ":" .. vim.env.PATH
+  end
+end
 EOF
         grep -v 'sessionoptions' "$INIT_LUA"
     } > "$tmp"
@@ -412,8 +434,6 @@ fi
 
 ###############################################################################
 # FIX: Pin nvim-treesitter to master branch (gcc compiler support)
-# The main branch removed gcc support and requires tree-sitter-cli which
-# needs GLIBC >= 2.29. master branch retains gcc compilation.
 ###############################################################################
 
 echo "Pinning nvim-treesitter to master branch..."
@@ -490,25 +510,16 @@ LSP_CUSTOM_FILE="$A_SUB_DIR/lsp.lua"
 create_file "$REMAP_FILEPATH"
 create_file "$LSP_CUSTOM_FILE"
 
-# FIX: use $A_SUB_DIR variable instead of hardcoded ~/.config/nvim path,
-# and use add_to_file instead of a hardcoded >> redirection so the require
-# lands in the correct init.lua on every OS (including MSYS2/Windows).
 cat > "$A_SUB_DIR/lualine_fix.lua" <<'EOF'
--- Lualine's own ColorScheme autocmd calls lualine.setup() which cascades
--- and wipes treesitter highlight groups. Replace it with refresh() instead.
 vim.api.nvim_create_autocmd("VimEnter", {
   once = true,
   callback = function()
-    -- Remove lualine's internal ColorScheme handler
     pcall(vim.api.nvim_clear_autocmds, { group = "lualine", event = "ColorScheme" })
-
-    -- Replace it with a safe version that doesn't cascade
     vim.api.nvim_create_autocmd("ColorScheme", {
       group = vim.api.nvim_create_augroup("lualine_safe", { clear = true }),
       callback = function()
         vim.schedule(function()
           pcall(require("lualine").refresh)
-          -- Re-attach treesitter to all active buffers
           for _, buf in ipairs(vim.api.nvim_list_bufs()) do
             if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].filetype ~= "" then
               pcall(vim.treesitter.start, buf)
@@ -525,9 +536,6 @@ add_to_file "$INIT_LUA" "require('a_sub_directory.lualine_fix')"
 
 ###############################################################################
 # FIX: Filetype detection in vsplits
-# Deferred with vim.schedule so filetype detect never fires mid-treesitter
-# attach sequence. Double-check inside the callback in case it was set
-# between the BufWinEnter event and the scheduled tick.
 ###############################################################################
 
 FILETYPE_FIX_FILE="$A_SUB_DIR/filetype_fix.lua"
@@ -541,8 +549,6 @@ vim.api.nvim_create_autocmd("BufWinEnter", {
         and vim.bo[buf].buftype == ""
         and vim.api.nvim_buf_get_name(buf) ~= ""
       then
-        -- Run filetype detect in the context of the specific buffer,
-        -- not whatever happens to be current at schedule time.
         vim.api.nvim_buf_call(buf, function()
           vim.cmd("filetype detect")
         end)
@@ -560,7 +566,6 @@ add_to_file "$INIT_LUA" "require('a_sub_directory.filetype_fix')"
 
 TREESITTER_REATTACH_FILE="$A_SUB_DIR/treesitter_reattach.lua"
 cat > "$TREESITTER_REATTACH_FILE" <<'EOF'
--- Re-attach treesitter on BufEnter for buffers that already have a filetype.
 vim.api.nvim_create_autocmd("BufEnter", {
   callback = function(ev)
     local buf = ev.buf
@@ -576,9 +581,6 @@ vim.api.nvim_create_autocmd("BufEnter", {
   end,
 })
 
--- Treesitter never auto-attaches after a delayed filetype detect.
--- This catches buffers that had filetype="" at BufEnter time and only
--- got their filetype set later (e.g. via the BufWinEnter filetype fix).
 vim.api.nvim_create_autocmd("FileType", {
   callback = function(ev)
     local buf = ev.buf
@@ -595,12 +597,11 @@ EOF
 add_to_file "$INIT_LUA" "require('a_sub_directory.treesitter_reattach')"
 
 ###############################################################################
-# FIX: Treesitter compiler config — must load early so TSInstall uses gcc.
+# FIX: Treesitter compiler config
 ###############################################################################
 
 TREESITTER_COMPILER_FILE="$A_SUB_DIR/treesitter_compiler.lua"
 cat > "$TREESITTER_COMPILER_FILE" <<'EOF'
--- Strip broken tree-sitter-cli from PATH immediately (GLIBC too old).
 local ts_exe = vim.fn.exepath('tree-sitter')
 if ts_exe ~= '' then
   local ts_dir = vim.fn.fnamemodify(ts_exe, ':h')
@@ -609,15 +610,12 @@ if ts_exe ~= '' then
   vim.env.PATH = table.concat(parts, ':')
 end
 
--- Patch nvim-treesitter's compiler selector to never attempt tree-sitter build.
--- This must be done after the plugin loads, before any TSInstall call.
 local function patch_ts_install()
   local ok, install = pcall(require, 'nvim-treesitter.install')
   if not ok then return end
   install.prefer_git = false
   install.compilers   = { 'gcc', 'cc', 'g++', 'clang' }
 
-  -- Patch the internal selector that picks tree-sitter build over gcc.
   local ok2, sel = pcall(require, 'nvim-treesitter.shell_command_selectors')
   if not ok2 or not sel then return end
 
@@ -625,8 +623,6 @@ local function patch_ts_install()
     local orig = sel.select_compiler_for_lang
     sel.select_compiler_for_lang = function(...)
       local result = orig(...)
-      -- If the selected command is tree-sitter, discard it so the caller
-      -- falls back to the next compiler (gcc).
       if type(result) == 'table'
          and type(result[1]) == 'table'
          and result[1][1] == 'tree-sitter'
@@ -638,10 +634,8 @@ local function patch_ts_install()
   end
 end
 
--- Apply immediately (in case nvim-treesitter was already loaded).
 patch_ts_install()
 
--- Also apply on LazyLoad in case nvim-treesitter loads after this module.
 vim.api.nvim_create_autocmd('User', {
   pattern  = 'LazyLoad',
   callback = function(ev)
@@ -656,8 +650,6 @@ add_to_file "$INIT_LUA" "require('a_sub_directory.treesitter_compiler')"
 
 ###############################################################################
 # FIX: Patch upstream wk.register() -> wk.add()
-# Handles both the call-style (prefix= arg) and the table-literal old spec
-# style ({ S = { name = "..." }, prefix = "<leader>" }) reported in checkhealth.
 ###############################################################################
 
 echo "=== Patching upstream which-key register() calls ==="
@@ -735,6 +727,30 @@ else:
     print(f"  No prefix-style register() found in {path}, skipping.")
 PYEOF
 done
+
+###############################################################################
+# FIX: Overwrite the upstream which-key plugin spec with a known-good version.
+# The upstream file uses a format that the surgical patcher can corrupt.
+# We replace the entire file to guarantee valid Lua and eager loading.
+###############################################################################
+
+echo "=== Overwriting which-key plugin spec ==="
+WK_SPEC_FILE=$(grep -rl 'folke/which-key' "$NVIM_CONFIG_DIR/lua" \
+    --include="*.lua" 2>/dev/null | head -1)
+
+if [[ -n "$WK_SPEC_FILE" ]]; then
+    echo "  Overwriting: $WK_SPEC_FILE"
+    cat > "$WK_SPEC_FILE" <<'EOF'
+return {
+  "folke/which-key.nvim",
+  lazy = false,
+  priority = 100,
+  opts = {},
+}
+EOF
+else
+    echo "  WARNING: could not find which-key plugin spec."
+fi
 
 ###############################################################################
 # whichkey.lua
@@ -818,6 +834,16 @@ EOF
 ###############################################################################
 
 cat > "$LSP_CUSTOM_FILE" <<'EOF'
+vim.api.nvim_create_autocmd("VimEnter", {
+  once = true,
+  callback = function()
+    local node_dir = os.getenv("HOME") .. "/.local/bin"
+    if not vim.env.PATH:find(node_dir, 1, true) then
+      vim.env.PATH = node_dir .. ":" .. vim.env.PATH
+    end
+  end,
+})
+
 local ok_cmp, cmp_nvim_lsp = pcall(require, 'cmp_nvim_lsp')
 local capabilities = ok_cmp
     and cmp_nvim_lsp.default_capabilities()
@@ -912,8 +938,6 @@ fi
 
 ###############################################################################
 # FIX: Replace treesitter-setup.lua with LazyDone-deferred safe version.
-# parser_install_dir is set explicitly to stdpath("data")/site which is
-# registered with lazy via performance.rtp.paths so it survives rtp resets.
 ###############################################################################
 
 TS_SETUP="$NVIM_CONFIG_DIR/lua/lsp/treesitter-setup.lua"
@@ -933,8 +957,6 @@ vim.api.nvim_create_autocmd('User', {
       return
     end
 
-    -- Keep parsers in stdpath("data")/site, which is added to the rtp via
-    -- lazy's performance.rtp.paths option (patched in lazy-plugins.lua).
     local parser_dir = vim.fn.stdpath("data") .. "/site"
     vim.fn.mkdir(parser_dir .. "/parser", "p")
 
@@ -955,53 +977,7 @@ vim.api.nvim_create_autocmd('User', {
 EOF
 fi
 
-#######################################################################################
-# FIX: Force which-key to load eagerly (lazy=false)
-# Without this, the first keypress that triggers which-key to load is
-# consumed, causing 'v' to require two presses on first use.
 ###############################################################################
-
-echo "=== Patching which-key to load eagerly ==="
-WK_SPEC_FILE=$(grep -rl 'which-key' "$NVIM_CONFIG_DIR/lua" \
-    --include="*.lua" 2>/dev/null | head -1)
-
-if [[ -n "$WK_SPEC_FILE" ]]; then
-    echo "  Patching which-key spec in: $WK_SPEC_FILE"
-    python3 - "$WK_SPEC_FILE" <<'PYEOF'
-import sys, re
-
-path = sys.argv[1]
-with open(path, 'r', encoding='utf-8') as f:
-    src = f.read()
-
-if 'lazy = false' in src and 'which-key' in src:
-    print("  which-key already marked lazy=false, skipping.")
-    sys.exit(0)
-
-# Remove any event/keys/cmd trigger on the which-key spec
-src = re.sub(
-    r'(["\']folke/which-key\.nvim["\'][^}]*?)'
-    r',?\s*event\s*=\s*["\'][^"\']*["\']',
-    r'\1',
-    src, flags=re.DOTALL
-)
-
-# Inject lazy=false, priority=100 after the plugin name
-src = re.sub(
-    r'(["\']folke/which-key\.nvim["\'])',
-    r'\1,\n    lazy = false,\n    priority = 100,',
-    src, count=1
-)
-
-with open(path, 'w', encoding='utf-8') as f:
-    f.write(src)
-print(f"  Patched: {path}")
-PYEOF
-else
-    echo "  WARNING: could not find which-key plugin spec."
-fi
-
-#######################################################################
 # FIX: Copilot duplicate keymaps
 ###############################################################################
 
@@ -1092,16 +1068,6 @@ add_to_file "$INIT_LUA" "require('a_sub_directory.copilot_keys')"
 
 ###############################################################################
 # FIX: Colorscheme races
-# moonlight.nvim is lazy=false, priority=1000 so applying only on VimEnter
-# avoids a double reload that can wipe treesitter highlight groups on the
-# first buffer.
-#
-# FIX 1: Use $A_SUB_DIR variable (not hardcoded ~/.config/nvim path) so the
-#         file lands in the right place on every OS including MSYS2/Windows.
-# FIX 2: add_to_file "$INIT_LUA" so the module is actually require'd.
-# FIX 3: BufEnter guard no longer skips ft == 'netrw' for the colorscheme
-#         check — netrw should still receive moonlight colors. Only the
-#         treesitter re-attach (in treesitter_reattach.lua) skips netrw.
 ###############################################################################
 
 cat > "$A_SUB_DIR/colorscheme.lua" <<'EOF'
@@ -1127,8 +1093,6 @@ local function apply_moonlight()
     vim.notify('moonlight colorscheme failed: ' .. tostring(err), vim.log.levels.WARN)
     return
   end
-  -- Defer reattach so buffers opened *after* this colorscheme call
-  -- (e.g. from netrw) have time to complete filetype detection first.
   vim.defer_fn(reattach_treesitter_all, 50)
 end
 
@@ -1147,8 +1111,6 @@ vim.api.nvim_create_autocmd('ColorScheme', {
 })
 EOF
 
-
-# FIX: wire the module into init.lua (was missing entirely in the original).
 add_to_file "$INIT_LUA" "require('a_sub_directory.colorscheme')"
 
 ###############################################################################
