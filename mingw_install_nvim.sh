@@ -229,13 +229,82 @@ SETTINGS_LUA="$LUA_USER_DIR/settings.lua"
 REMAPS_LUA="$LUA_USER_DIR/remaps.lua"
 PLUGINS_LUA="$LUA_USER_DIR/plugins.lua"
 
+CLIPBOARD_LUA="$LUA_USER_DIR/clipboard.lua"
+
 write_file "$INIT_LUA" <<'EOF'
 vim.g.mapleader = " "
 vim.g.maplocalleader = " "
 
 require("user.settings")
+require("user.clipboard")
 require("user.remaps")
 require("user.plugins")
+EOF
+
+write_file "$CLIPBOARD_LUA" <<'EOF'
+local is_ssh = vim.env.SSH_CONNECTION ~= nil or vim.env.SSH_TTY ~= nil
+
+if is_ssh then
+  local ok, osc52 = pcall(require, "vim.ui.clipboard.osc52")
+  if ok then
+    vim.g.clipboard = {
+      name = "OSC52",
+      copy = {
+        ["+"] = osc52.copy("+"),
+        ["*"] = osc52.copy("*"),
+      },
+      paste = {
+        ["+"] = function()
+          return { vim.fn.split(vim.fn.getreg('"'), "\n"), vim.fn.getregtype('"') }
+        end,
+        ["*"] = function()
+          return { vim.fn.split(vim.fn.getreg('"'), "\n"), vim.fn.getregtype('"') }
+        end,
+      },
+    }
+  end
+elseif vim.fn.executable("wl-copy") == 1
+  and vim.fn.executable("wl-paste") == 1
+then
+  vim.g.clipboard = {
+    name = "wl-clipboard",
+    copy = {
+      ["+"] = "wl-copy --foreground --type text/plain",
+      ["*"] = "wl-copy --foreground --primary --type text/plain",
+    },
+    paste = {
+      ["+"] = "wl-paste --no-newline",
+      ["*"] = "wl-paste --no-newline --primary",
+    },
+    cache_enabled = 0,
+  }
+elseif vim.fn.executable("xclip") == 1 then
+  vim.g.clipboard = {
+    name = "xclip",
+    copy = {
+      ["+"] = "xclip -quiet -i -selection clipboard",
+      ["*"] = "xclip -quiet -i -selection primary",
+    },
+    paste = {
+      ["+"] = "xclip -o -selection clipboard",
+      ["*"] = "xclip -o -selection primary",
+    },
+    cache_enabled = 0,
+  }
+elseif vim.fn.executable("xsel") == 1 then
+  vim.g.clipboard = {
+    name = "xsel",
+    copy = {
+      ["+"] = "xsel --clipboard --input",
+      ["*"] = "xsel --primary --input",
+    },
+    paste = {
+      ["+"] = "xsel --clipboard --output",
+      ["*"] = "xsel --primary --output",
+    },
+    cache_enabled = 0,
+  }
+end
 EOF
 
 write_file "$SETTINGS_LUA" <<'EOF'
