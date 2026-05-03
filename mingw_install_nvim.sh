@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Neovim Installer for Git Bash / MinGW
+# Neovim Installer for Git Bash / MinGW and remote Linux
 # Fixes:
 # - real colored installer output
+# - installs correct Neovim release for Windows/Linux + CPU arch
 # - correct Neovim config/data paths
 # - correct packer install path
 # - ensures ~/.local/bin is on PATH
@@ -95,29 +96,103 @@ run_packer_sync() {
   fi
 }
 
+detect_platform() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Linux)
+      PLATFORM="linux"
+
+      case "$arch" in
+        x86_64 | amd64)
+          NVIM_ASSET="nvim-linux-x86_64.tar.gz"
+          NVIM_DIRNAME="nvim-linux-x86_64"
+          NVIM_BIN_REL="bin/nvim"
+          ;;
+        aarch64 | arm64)
+          NVIM_ASSET="nvim-linux-arm64.tar.gz"
+          NVIM_DIRNAME="nvim-linux-arm64"
+          NVIM_BIN_REL="bin/nvim"
+          ;;
+        armv7l | armv6l)
+          NVIM_ASSET="nvim-linux-armhf.tar.gz"
+          NVIM_DIRNAME="nvim-linux-armhf"
+          NVIM_BIN_REL="bin/nvim"
+          ;;
+        *)
+          echo_error "Unsupported Linux architecture: $arch"
+          exit 1
+          ;;
+      esac
+      ;;
+    MINGW* | MSYS* | CYGWIN*)
+      PLATFORM="windows"
+      NVIM_ASSET="nvim-win64.zip"
+      NVIM_DIRNAME="nvim-win64"
+      NVIM_BIN_REL="bin/nvim.exe"
+      ;;
+    *)
+      echo_error "Unsupported operating system: $os"
+      exit 1
+      ;;
+  esac
+
+  PLATFORM_ARCH="$arch"
+}
+
+install_neovim() {
+  local tmp_dir archive_path download_url
+  tmp_dir="$(mktemp -d)"
+  archive_path="$tmp_dir/$NVIM_ASSET"
+  download_url="https://github.com/neovim/neovim/releases/latest/download/$NVIM_ASSET"
+
+  echo_info "Downloading latest Neovim for $PLATFORM ($PLATFORM_ARCH)..."
+  curl -fsSLo "$archive_path" "$download_url"
+
+  rm -rf "$NVIM_INSTALL_DIR"
+
+  case "$PLATFORM" in
+    windows)
+      unzip -q "$archive_path" -d "$INSTALL_BASE_DIR"
+      ;;
+    linux)
+      tar -xzf "$archive_path" -C "$INSTALL_BASE_DIR"
+      ;;
+  esac
+
+  rm -rf "$tmp_dir"
+}
+
 require_cmd curl
-require_cmd unzip
 require_cmd git
 
 INSTALL_BASE_DIR="$HOME/.local"
-NVIM_INSTALL_DIR="$INSTALL_BASE_DIR/nvim-win64"
 BIN_DIR="$INSTALL_BASE_DIR/bin"
 
 mkdir -p "$BIN_DIR"
+detect_platform
 
-echo_info "Downloading latest Neovim..."
-curl -fsSLo nvim-win64.zip \
-  "https://github.com/neovim/neovim/releases/latest/download/nvim-win64.zip"
+case "$PLATFORM" in
+  windows)
+    require_cmd unzip
+    ;;
+  linux)
+    require_cmd tar
+    ;;
+esac
 
-rm -rf "$NVIM_INSTALL_DIR"
-unzip -q nvim-win64.zip -d "$INSTALL_BASE_DIR"
-rm -f nvim-win64.zip
+NVIM_INSTALL_DIR="$INSTALL_BASE_DIR/$NVIM_DIRNAME"
 
-cat > "$BIN_DIR/nvim" <<'EOF'
+echo_ok "Detected platform: $PLATFORM ($PLATFORM_ARCH)"
+install_neovim
+
+write_file "$BIN_DIR/nvim" <<EOF
 #!/usr/bin/env bash
-export TERM="${TERM:-xterm-256color}"
-export COLORTERM="${COLORTERM:-truecolor}"
-exec "$HOME/.local/nvim-win64/bin/nvim.exe" "$@"
+export TERM="\${TERM:-xterm-256color}"
+export COLORTERM="\${COLORTERM:-truecolor}"
+exec "$NVIM_INSTALL_DIR/$NVIM_BIN_REL" "\$@"
 EOF
 
 chmod +x "$BIN_DIR/nvim"
@@ -147,7 +222,7 @@ echo_info "Creating fresh config..."
 rm -rf "$NVIM_CONFIG_DIR" "$HOME/.config/nvim" 2>/dev/null || true
 rm -rf "$NVIM_DATA_DIR/site/pack" 2>/dev/null || true
 create_fresh_directory "$LUA_USER_DIR"
-mkdir -p "$NVIM_DATA_DIR/undo"
+mkdir -p "$NVIM_DATA_DIR/undo" "$NVIM_CONFIG_DIR/plugin"
 
 INIT_LUA="$NVIM_CONFIG_DIR/init.lua"
 SETTINGS_LUA="$LUA_USER_DIR/settings.lua"
@@ -407,7 +482,7 @@ run_packer_sync 2
 echo
 echo_ok "Installation finished!"
 echo
-echo "Close all terminal windows, open a new Git Bash window, then run:"
+echo "Open a new shell session (or run: source ~/.bashrc), then run:"
 echo "  nvim"
 echo
 echo "If you want to verify you're using the correct binary, run:"
