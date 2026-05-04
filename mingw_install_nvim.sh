@@ -387,24 +387,13 @@ packer.startup(function(use)
   use("wbthomason/packer.nvim")
 
   use({
-    "rose-pine/neovim",
-    as = "rose-pine",
+    "morhetz/gruvbox",
     config = function()
       vim.cmd("silent! packloadall")
-
-      local ok_rose, rose_pine = pcall(require, "rose-pine")
-      if not ok_rose then
-        return
-      end
-
-      rose_pine.setup({
-        variant = "main",
-        styles = {
-          transparency = true,
-        },
-      })
-
-      pcall(vim.cmd.colorscheme, "rose-pine")
+      vim.o.background = "dark"
+      vim.g.gruvbox_contrast_dark = "hard"
+      vim.g.gruvbox_italic = 1
+      pcall(vim.cmd.colorscheme, "gruvbox")
     end,
   })
 
