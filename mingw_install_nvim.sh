@@ -244,6 +244,8 @@ EOF
 write_file "$CLIPBOARD_LUA" <<'EOF'
 local is_ssh = vim.env.SSH_CONNECTION ~= nil or vim.env.SSH_TTY ~= nil
 
+vim.opt.clipboard = "unnamedplus"
+
 if is_ssh then
   local ok, osc52 = pcall(require, "vim.ui.clipboard.osc52")
   if ok then
@@ -254,12 +256,8 @@ if is_ssh then
         ["*"] = osc52.copy("*"),
       },
       paste = {
-        ["+"] = function()
-          return { vim.fn.split(vim.fn.getreg('"'), "\n"), vim.fn.getregtype('"') }
-        end,
-        ["*"] = function()
-          return { vim.fn.split(vim.fn.getreg('"'), "\n"), vim.fn.getregtype('"') }
-        end,
+        ["+"] = osc52.paste("+"),
+        ["*"] = osc52.paste("*"),
       },
     }
   end
