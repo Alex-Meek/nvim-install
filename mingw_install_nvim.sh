@@ -2,12 +2,12 @@
 # Neovim Installer for Git Bash / MinGW and remote Linux
 # Fixes:
 # - real colored installer output
-# - installs correct Neovim release for Windows/Linux + CPU arch
+# - installs correct Neovim release for Windows/Linux + CPU arch + glibc
 # - correct Neovim config/data paths
 # - correct packer install path
 # - ensures ~/.local/bin is on PATH
 # - keymaps load properly
-# - rose-pine colorscheme loads properly
+# - gruvbox colorscheme loads properly
 
 set -euo pipefail
 
@@ -40,6 +40,43 @@ require_cmd() {
     echo_error "Missing required command: $1"
     exit 1
   fi
+}
+
+version_ge() {
+  [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" == "$2" ]]
+}
+
+detect_glibc_version() {
+  local v=""
+
+  if command -v getconf >/dev/null 2>&1; then
+    v="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2; exit}')"
+    if [[ -n "$v" ]]; then
+      printf '%s\n' "$v"
+      return 0
+    fi
+  fi
+
+  if command -v ldd >/dev/null 2>&1; then
+    v="$(
+      ldd --version 2>/dev/null | awk '
+        NR == 1 {
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[0-9]+\.[0-9]+$/) {
+              print $i
+              exit
+            }
+          }
+        }
+      '
+    )"
+    if [[ -n "$v" ]]; then
+      printf '%s\n' "$v"
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 normalize_path() {
@@ -142,16 +179,124 @@ detect_platform() {
   PLATFORM_ARCH="$arch"
 }
 
+select_neovim_release() {
+  NVIM_RELEASE_TAG="latest"
+
+  if [[ "$PLATFORM" != "linux" ]]; then
+    return
+  fi
+
+  case "$PLATFORM_ARCH" in
+    x86_64 | amd64)
+      local glibc_version=""
+      glibc_version="$(detect_glibc_version || true)"
+
+      if [[ -z "$glibc_version" ]]; then
+        echo_info "Could not detect glibc version; using latest Neovim"
+        return
+      fi
+
+      echo_info "Detected glibc: $glibc_version"
+
+      if version_ge "$glibc_version" "2.34"; then
+        NVIM_RELEASE_TAG="latest"
+        NVIM_ASSET="nvim-linux-x86_64.tar.gz"
+        NVIM_DIRNAME="nvim-linux-x86_64"
+      elif version_ge "$glibc_version" "2.28"; then
+        NVIM_RELEASE_TAG="v0.9.5"
+        NVIM_ASSET="nvim-linux64.tar.gz"
+        NVIM_DIRNAME="nvim-linux64"
+        echo_info "Using Neovim v0.9.5 for glibc compatibility"
+      else
+        echo_error "glibc $glibc_version is too old for this installer's"
+        echo_error "prebuilt Neovim binaries"
+        echo_error "Use a site module, conda-forge, or build from source"
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+validate_neovim_binary() {
+  local output=""
+  local status=0
+  local real_bin="$NVIM_INSTALL_DIR/$NVIM_BIN_REL"
+
+  if command -v timeout >/dev/null 2>&1; then
+    set +e
+    output="$(timeout 15s "$real_bin" --version 2>&1)"
+    status=$?
+    set -e
+  else
+    set +e
+    output="$("$real_bin" --version 2>&1)"
+    status=$?
+    set -e
+  fi
+
+  if [[ $status -ne 0 ]]; then
+    echo_error "Installed Neovim failed validation"
+    printf '%s\n' "$output" >&2
+
+    if [[ $status -eq 124 ]]; then
+      echo_error "Neovim validation timed out"
+    fi
+
+    if grep -q 'GLIBC_' <<<"$output"; then
+      echo_error "The downloaded Neovim binary is not compatible with"
+      echo_error "this host's glibc"
+    fi
+
+    exit 1
+  fi
+}
+
+install_nvim_launcher() {
+  local target="$NVIM_INSTALL_DIR/$NVIM_BIN_REL"
+
+  if [[ "$PLATFORM" == "linux" ]]; then
+    if [[ "$(readlink -f "$BIN_DIR")" == \
+      "$(readlink -f "$NVIM_INSTALL_DIR/bin")" ]]; then
+      echo_ok "Using Neovim launcher already present in $NVIM_INSTALL_DIR/bin"
+      return
+    fi
+
+    ln -sfn "$target" "$BIN_DIR/nvim"
+    echo_ok "Linked: $BIN_DIR/nvim -> $target"
+    return
+  fi
+
+  write_file "$BIN_DIR/nvim" <<EOF
+#!/usr/bin/env bash
+export TERM="\${TERM:-xterm-256color}"
+export COLORTERM="\${COLORTERM:-truecolor}"
+exec "$target" "\$@"
+EOF
+
+  chmod +x "$BIN_DIR/nvim"
+}
+
 install_neovim() {
   local tmp_dir archive_path download_url
   tmp_dir="$(mktemp -d)"
   archive_path="$tmp_dir/$NVIM_ASSET"
-  download_url="https://github.com/neovim/neovim/releases/latest/download/$NVIM_ASSET"
 
-  echo_info "Downloading latest Neovim for $PLATFORM ($PLATFORM_ARCH)..."
+  if [[ "$NVIM_RELEASE_TAG" == "latest" ]]; then
+    download_url="https://github.com/neovim/neovim/releases/latest/download/$NVIM_ASSET"
+  else
+    download_url="https://github.com/neovim/neovim/releases/download/$NVIM_RELEASE_TAG/$NVIM_ASSET"
+  fi
+
+  echo_info "Downloading Neovim $NVIM_RELEASE_TAG for $PLATFORM"
+  echo_info "Asset: $NVIM_ASSET"
   curl -fsSLo "$archive_path" "$download_url"
 
-  rm -rf "$NVIM_INSTALL_DIR"
+  rm -rf \
+    "$INSTALL_BASE_DIR/nvim-linux64" \
+    "$INSTALL_BASE_DIR/nvim-linux-x86_64" \
+    "$INSTALL_BASE_DIR/nvim-linux-arm64" \
+    "$INSTALL_BASE_DIR/nvim-linux-armhf" \
+    "$INSTALL_BASE_DIR/nvim-win64"
 
   case "$PLATFORM" in
     windows)
@@ -162,6 +307,7 @@ install_neovim() {
       ;;
   esac
 
+  validate_neovim_binary
   rm -rf "$tmp_dir"
 }
 
@@ -173,6 +319,7 @@ BIN_DIR="$INSTALL_BASE_DIR/bin"
 
 mkdir -p "$BIN_DIR"
 detect_platform
+select_neovim_release
 
 case "$PLATFORM" in
   windows)
@@ -186,26 +333,24 @@ esac
 NVIM_INSTALL_DIR="$INSTALL_BASE_DIR/$NVIM_DIRNAME"
 
 echo_ok "Detected platform: $PLATFORM ($PLATFORM_ARCH)"
+echo_ok "Selected Neovim release: $NVIM_RELEASE_TAG"
 install_neovim
-
-write_file "$BIN_DIR/nvim" <<EOF
-#!/usr/bin/env bash
-export TERM="\${TERM:-xterm-256color}"
-export COLORTERM="\${COLORTERM:-truecolor}"
-exec "$NVIM_INSTALL_DIR/$NVIM_BIN_REL" "\$@"
-EOF
-
-chmod +x "$BIN_DIR/nvim"
+install_nvim_launcher
 ensure_local_bin_on_path
 echo_ok "Neovim installed"
 
 echo_info "Detecting Neovim config/data paths..."
-RAW_NVIM_CONFIG_DIR="$("$BIN_DIR/nvim" \
-  -u NONE -i NONE --noplugin --headless \
-  +"lua io.write(vim.fn.stdpath('config'))" +qall! 2>/dev/null)"
-RAW_NVIM_DATA_DIR="$("$BIN_DIR/nvim" \
-  -u NONE -i NONE --noplugin --headless \
-  +"lua io.write(vim.fn.stdpath('data'))" +qall! 2>/dev/null)"
+if [[ "$PLATFORM" == "linux" ]]; then
+  RAW_NVIM_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
+  RAW_NVIM_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
+else
+  RAW_NVIM_CONFIG_DIR="$("$BIN_DIR/nvim" \
+    -u NONE -i NONE --noplugin --headless \
+    +"lua io.write(vim.fn.stdpath('config'))" +qall! 2>/dev/null)"
+  RAW_NVIM_DATA_DIR="$("$BIN_DIR/nvim" \
+    -u NONE -i NONE --noplugin --headless \
+    +"lua io.write(vim.fn.stdpath('data'))" +qall! 2>/dev/null)"
+fi
 
 if [[ -z "$RAW_NVIM_CONFIG_DIR" || -z "$RAW_NVIM_DATA_DIR" ]]; then
   echo_error "Failed to detect Neovim stdpath() directories"
@@ -230,7 +375,6 @@ INIT_LUA="$NVIM_CONFIG_DIR/init.lua"
 SETTINGS_LUA="$LUA_USER_DIR/settings.lua"
 REMAPS_LUA="$LUA_USER_DIR/remaps.lua"
 PLUGINS_LUA="$LUA_USER_DIR/plugins.lua"
-
 CLIPBOARD_LUA="$LUA_USER_DIR/clipboard.lua"
 
 write_file "$INIT_LUA" <<'EOF'
@@ -551,4 +695,4 @@ echo "  <leader>pv   -> file explorer"
 echo "  <leader>pf   -> Telescope find files"
 echo "  <leader>u    -> Undotree"
 echo "  <leader>gs   -> Fugitive git status"
-echo "  colorscheme  -> rose-pine"
+echo "  colorscheme  -> gruvbox"
