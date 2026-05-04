@@ -200,10 +200,12 @@ ensure_local_bin_on_path
 echo_ok "Neovim installed"
 
 echo_info "Detecting Neovim config/data paths..."
-RAW_NVIM_CONFIG_DIR="$("$BIN_DIR/nvim" --headless \
-  +"lua io.write(vim.fn.stdpath('config'))" +qall 2>/dev/null)"
-RAW_NVIM_DATA_DIR="$("$BIN_DIR/nvim" --headless \
-  +"lua io.write(vim.fn.stdpath('data'))" +qall 2>/dev/null)"
+RAW_NVIM_CONFIG_DIR="$("$BIN_DIR/nvim" \
+  -u NONE -i NONE --noplugin --headless \
+  +"lua io.write(vim.fn.stdpath('config'))" +qall! 2>/dev/null)"
+RAW_NVIM_DATA_DIR="$("$BIN_DIR/nvim" \
+  -u NONE -i NONE --noplugin --headless \
+  +"lua io.write(vim.fn.stdpath('data'))" +qall! 2>/dev/null)"
 
 if [[ -z "$RAW_NVIM_CONFIG_DIR" || -z "$RAW_NVIM_DATA_DIR" ]]; then
   echo_error "Failed to detect Neovim stdpath() directories"
