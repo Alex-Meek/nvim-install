@@ -578,26 +578,40 @@ packer.startup(function(use)
       requires = {
         "nvim-lua/plenary.nvim",
       },
-      config = function()
-        local ok_tel, builtin = pcall(require, "telescope.builtin")
-        if not ok_tel then
-          return
-        end
+        config = function()
+          local ok_telescope, telescope = pcall(require, "telescope")
+          if not ok_telescope then
+            return
+          end
+        
+          telescope.setup({
+            defaults = {
+              preview = {
+                treesitter = false,
+              },
+            },
+          })
+        
+          local ok_tel, builtin = pcall(require, "telescope.builtin")
+          if not ok_tel then
+            return
+          end
+        
+          vim.keymap.set("n", "<leader>pf", builtin.find_files, {
+            desc = "Find files",
+          })
+        
+          vim.keymap.set("n", "<C-p>", builtin.git_files, {
+            desc = "Git files",
+          })
+        
+          vim.keymap.set("n", "<leader>ps", function()
+            builtin.grep_string({ search = vim.fn.input("Grep > ") })
+          end, {
+            desc = "Grep string",
+          })
+        end,
 
-        vim.keymap.set("n", "<leader>pf", builtin.find_files, {
-          desc = "Find files",
-        })
-
-        vim.keymap.set("n", "<C-p>", builtin.git_files, {
-          desc = "Git files",
-        })
-
-        vim.keymap.set("n", "<leader>ps", function()
-          builtin.grep_string({ search = vim.fn.input("Grep > ") })
-        end, {
-          desc = "Grep string",
-        })
-      end,
     })
   end
 
