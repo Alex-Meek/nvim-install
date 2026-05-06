@@ -124,7 +124,8 @@ run_packer_sync() {
   echo_info "Running PackerSync (pass $1)..."
 
   if ! "$BIN_DIR/nvim" --headless \
-    +"autocmd User PackerComplete quitall" \
+    +"autocmd User PackerComplete ++once PackerCompile" \
+    +"autocmd User PackerCompileDone ++once quitall" \
     +"PackerSync"
   then
     echo_error "PackerSync pass $1 failed. Open nvim and run :PackerSync"
@@ -388,28 +389,20 @@ require("user.plugins")
 EOF
 
 write_file "$CLIPBOARD_LUA" <<'EOF'
-local is_ssh = vim.env.SSH_CONNECTION ~= nil or vim.env.SSH_TTY ~= nil
+local function has(cmd)
+  return vim.fn.executable(cmd) == 1
+end
 
-vim.opt.clipboard = "unnamedplus"
+local is_remote = vim.env.SSH_CONNECTION
+  or vim.env.SSH_CLIENT
+  or vim.env.SSH_TTY
+  or vim.env.MOSH_IP
 
-if is_ssh then
-  local ok, osc52 = pcall(require, "vim.ui.clipboard.osc52")
-  if ok then
-    vim.g.clipboard = {
-      name = "OSC52",
-      copy = {
-        ["+"] = osc52.copy("+"),
-        ["*"] = osc52.copy("*"),
-      },
-      paste = {
-        ["+"] = osc52.paste("+"),
-        ["*"] = osc52.paste("*"),
-      },
-    }
-  end
-elseif vim.fn.executable("wl-copy") == 1
-  and vim.fn.executable("wl-paste") == 1
-then
+if is_remote then
+  return
+end
+
+if has("wl-copy") and has("wl-paste") then
   vim.g.clipboard = {
     name = "wl-clipboard",
     copy = {
@@ -422,7 +415,10 @@ then
     },
     cache_enabled = 0,
   }
-elseif vim.fn.executable("xclip") == 1 then
+  return
+end
+
+if has("xclip") then
   vim.g.clipboard = {
     name = "xclip",
     copy = {
@@ -435,7 +431,10 @@ elseif vim.fn.executable("xclip") == 1 then
     },
     cache_enabled = 0,
   }
-elseif vim.fn.executable("xsel") == 1 then
+  return
+end
+
+if has("xsel") then
   vim.g.clipboard = {
     name = "xsel",
     copy = {
@@ -516,15 +515,20 @@ EOF
 
 write_file "$PLUGINS_LUA" <<'EOF'
 vim.cmd("packadd packer.nvim")
-vim.cmd("silent! packloadall")
 
 local ok, packer = pcall(require, "packer")
 if not ok then
   return
 end
 
+local compile_path = vim.fn.stdpath("config")
+  .. "/plugin/packer_compiled.lua"
+local has_nvim_0_11 = vim.fn.has("nvim-0.11") == 1
+
 packer.init({
-  compile_path = vim.fn.stdpath("config") .. "/plugin/packer_compiled.lua",
+  compile_path = compile_path,
+  compile_on_sync = false,
+  auto_reload_compiled = true,
 })
 
 packer.startup(function(use)
@@ -533,7 +537,6 @@ packer.startup(function(use)
   use({
     "morhetz/gruvbox",
     config = function()
-      vim.cmd("silent! packloadall")
       vim.o.background = "dark"
       vim.g.gruvbox_contrast_dark = "hard"
       vim.g.gruvbox_italic = 1
@@ -541,41 +544,75 @@ packer.startup(function(use)
     end,
   })
 
-  use({
-    "nvim-telescope/telescope.nvim",
-    requires = {
-      "nvim-lua/plenary.nvim",
-    },
-    config = function()
-      vim.cmd("silent! packloadall")
+  if has_nvim_0_11 then
+    use({
+      "nvim-telescope/telescope.nvim",
+      requires = {
+        "nvim-lua/plenary.nvim",
+      },
+      config = function()
+        local ok_tel, builtin = pcall(require, "telescope.builtin")
+        if not ok_tel then
+          return
+        end
 
-      local ok_tel, builtin = pcall(require, "telescope.builtin")
-      if not ok_tel then
-        return
-      end
+        vim.keymap.set("n", "<leader>pf", builtin.find_files, {
+          desc = "Find files",
+        })
 
-      vim.keymap.set("n", "<leader>pf", builtin.find_files, {
-        desc = "Find files",
-      })
+        vim.keymap.set("n", "<C-p>", builtin.git_files, {
+          desc = "Git files",
+        })
 
-      vim.keymap.set("n", "<C-p>", builtin.git_files, {
-        desc = "Git files",
-      })
+        vim.keymap.set("n", "<leader>ps", function()
+          builtin.grep_string({ search = vim.fn.input("Grep > ") })
+        end, {
+          desc = "Grep string",
+        })
+      end,
+    })
+  else
+    use({
+      "nvim-telescope/telescope.nvim",
+      tag = "0.1.8",
+      requires = {
+        "nvim-lua/plenary.nvim",
+      },
+      config = function()
+        local ok_tel, builtin = pcall(require, "telescope.builtin")
+        if not ok_tel then
+          return
+        end
 
-      vim.keymap.set("n", "<leader>ps", function()
-        builtin.grep_string({ search = vim.fn.input("Grep > ") })
-      end, {
-        desc = "Grep string",
-      })
-    end,
-  })
+        vim.keymap.set("n", "<leader>pf", builtin.find_files, {
+          desc = "Find files",
+        })
+
+        vim.keymap.set("n", "<C-p>", builtin.git_files, {
+          desc = "Git files",
+        })
+
+        vim.keymap.set("n", "<leader>ps", function()
+          builtin.grep_string({ search = vim.fn.input("Grep > ") })
+        end, {
+          desc = "Grep string",
+        })
+      end,
+    })
+  end
 
   use({
     "nvim-treesitter/nvim-treesitter",
-    run = ":TSUpdate",
+    run = function()
+      local ok_install, install = pcall(
+        require,
+        "nvim-treesitter.install"
+      )
+      if ok_install then
+        install.update({ with_sync = true })()
+      end
+    end,
     config = function()
-      vim.cmd("silent! packloadall")
-
       local ok_ts, configs = pcall(require, "nvim-treesitter.configs")
       if not ok_ts then
         return
@@ -603,6 +640,51 @@ packer.startup(function(use)
     end,
   })
 
+  use({
+    "ojroques/nvim-osc52",
+    config = function()
+      local is_remote = vim.env.SSH_CONNECTION
+        or vim.env.SSH_CLIENT
+        or vim.env.SSH_TTY
+        or vim.env.MOSH_IP
+
+      if not is_remote then
+        return
+      end
+
+      local ok_osc, osc52 = pcall(require, "osc52")
+      if not ok_osc then
+        return
+      end
+
+      pcall(function()
+        osc52.setup({
+          max_length = 0,
+          silent = false,
+          trim = false,
+        })
+      end)
+
+      local group = vim.api.nvim_create_augroup("RemoteOsc52Yank", {
+        clear = true,
+      })
+
+      vim.api.nvim_create_autocmd("TextYankPost", {
+        group = group,
+        callback = function()
+          if vim.v.event.operator ~= "y" then
+            return
+          end
+
+          local reg = vim.v.event.regname
+          if reg == "+" or reg == "*" then
+            osc52.copy_register(reg)
+          end
+        end,
+      })
+    end,
+  })
+
   use("ThePrimeagen/harpoon")
 
   use({
@@ -623,51 +705,67 @@ packer.startup(function(use)
     end,
   })
 
-  use({
-    "VonHeikemen/lsp-zero.nvim",
-    branch = "v3.x",
-    requires = {
-      "williamboman/mason.nvim",
-      "williamboman/mason-lspconfig.nvim",
-      "neovim/nvim-lspconfig",
-      "hrsh7th/nvim-cmp",
-      "hrsh7th/cmp-nvim-lsp",
-      "L3MON4D3/LuaSnip",
-    },
-    config = function()
-      vim.cmd("silent! packloadall")
+  if has_nvim_0_11 then
+    use({
+      "VonHeikemen/lsp-zero.nvim",
+      branch = "v3.x",
+      requires = {
+        "williamboman/mason.nvim",
+        "williamboman/mason-lspconfig.nvim",
+        "neovim/nvim-lspconfig",
+        "hrsh7th/nvim-cmp",
+        "hrsh7th/cmp-nvim-lsp",
+        "L3MON4D3/LuaSnip",
+      },
+      config = function()
+        local ok_lsp, lsp_zero = pcall(require, "lsp-zero")
+        if not ok_lsp then
+          return
+        end
 
-      local ok_lsp, lsp_zero = pcall(require, "lsp-zero")
-      if not ok_lsp then
-        return
-      end
+        lsp_zero.on_attach(function(_, bufnr)
+          lsp_zero.default_keymaps({ buffer = bufnr })
+        end)
 
-      lsp_zero.on_attach(function(_, bufnr)
-        lsp_zero.default_keymaps({ buffer = bufnr })
-      end)
+        local ok_mason, mason = pcall(require, "mason")
+        if ok_mason then
+          mason.setup()
+        end
 
-      local ok_mason, mason = pcall(require, "mason")
-      if ok_mason then
-        mason.setup()
-      end
-
-      local ok_mlc, mason_lspconfig = pcall(require, "mason-lspconfig")
-      if ok_mlc then
-        mason_lspconfig.setup({
-          ensure_installed = {
-            "lua_ls",
-            "pyright",
-            "rust_analyzer",
-          },
-          handlers = {
-            lsp_zero.default_setup,
-          },
-        })
-      end
-    end,
-  })
+        local ok_mlc, mason_lspconfig = pcall(
+          require,
+          "mason-lspconfig"
+        )
+        if ok_mlc then
+          mason_lspconfig.setup({
+            ensure_installed = {
+              "lua_ls",
+              "pyright",
+              "rust_analyzer",
+            },
+            handlers = {
+              lsp_zero.default_setup,
+            },
+          })
+        end
+      end,
+    })
+  end
 end)
 EOF
+
+run_treesitter_update() {
+  echo_info "Updating Treesitter parsers..."
+
+  if ! "$BIN_DIR/nvim" --headless \
+    +'lua local ok, install = pcall(require, "nvim-treesitter.install"); if ok then install.update({ with_sync = true })() end' \
+    +qall
+  then
+    echo_error "Treesitter update failed. Open nvim and run :TSUpdate"
+  else
+    echo_ok "Treesitter parsers updated"
+  fi
+} 
 
 rm -f "$NVIM_CONFIG_DIR/plugin/packer_compiled.lua" 2>/dev/null || true
 
@@ -680,6 +778,7 @@ fi
 
 run_packer_sync 1
 run_packer_sync 2
+run_treesitter_update
 
 echo
 echo_ok "Installation finished!"
