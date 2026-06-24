@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Neovim Installer for Git Bash / MinGW and remote Linux
 # Fixes:
-# - Completely eliminates headless bootstrap bugs (E492/E5108) by shifting parser setup to lazy load
-# - Silences deprecation warnings during headless sync execution
-# - Completely removes the project sidebar layout behavior
-# - Focus shifts cleanly to the newly created pane on vertical splits (:vsplit)
+# - real colored installer output
+# - installs correct Neovim release for Windows/Linux + CPU arch + glibc
+# - correct Neovim config/data paths
+# - correct packer install path
+# - ensures ~/.local/bin is on PATH
+# - keymaps load properly
+# - gruvbox colorscheme loads properly
+# - Hybrid remote clipboard handling (MobaXterm X11 vs MSYS2 OSC52)
 
 set -euo pipefail
 
@@ -121,7 +125,6 @@ run_packer_sync() {
   echo_info "Running PackerSync (pass $1)..."
 
   if ! "$BIN_DIR/nvim" --headless \
-    --cmd "lua vim.tbl_islist = vim.islist" \
     +"autocmd User PackerComplete ++once PackerCompile" \
     +"autocmd User PackerCompileDone ++once quitall" \
     +"PackerSync"
@@ -396,10 +399,70 @@ local is_remote = vim.env.SSH_CONNECTION
   or vim.env.SSH_TTY
   or vim.env.MOSH_IP
 
+-- 1. HYBRID REMOTE ENV (MobaXterm with X11 Forwarding enabled)
+if is_remote and vim.env.DISPLAY then
+  if has("xclip") then
+    vim.g.clipboard = {
+      name = "xclip-moba-x11",
+      copy = {
+        ["+"] = "xclip -quiet -i -selection clipboard",
+        ["*"] = "xclip -quiet -i -selection primary",
+      },
+      paste = {
+        ["+"] = "xclip -o -selection clipboard",
+        ["*"] = "xclip -o -selection primary",
+      },
+      cache_enabled = 0,
+    }
+    return
+  elseif has("xsel") then
+    vim.g.clipboard = {
+      name = "xsel-moba-x11",
+      copy = {
+        ["+"] = "xsel --clipboard --input",
+        ["*"] = "xsel --primary --input",
+      },
+      paste = {
+        ["+"] = "xsel --clipboard --output",
+        ["*"] = "xsel --primary --output",
+      },
+      cache_enabled = 0,
+    }
+    return
+  end
+end
+
+-- 2. HYBRID REMOTE ENV FALLBACK (MSYS2 / Mintty / Terminals with native OSC52 support)
 if is_remote then
+  if vim.fn.has("nvim-0.10") == 1 then
+    vim.g.clipboard = {
+      name = "osc52-native",
+      copy = {
+        ["+"] = require("vim.ui.clipboard.osc52").copy("+"),
+        ["*"] = require("vim.ui.clipboard.osc52").copy("*"),
+      },
+      paste = {
+        ["+"] = require("vim.ui.clipboard.osc52").paste("+"),
+        ["*"] = require("vim.ui.clipboard.osc52").paste("*"),
+      },
+    }
+  else
+    vim.g.clipboard = {
+      name = "osc52-plugin-fallback",
+      copy = {
+        ["+"] = function(lines) pcall(function() require("osc52").copy(table.concat(lines, "\n")) end) end,
+        ["*"] = function(lines) pcall(function() require("osc52").copy(table.concat(lines, "\n")) end) end,
+      },
+      paste = {
+        ["+"] = function() return {vim.fn.split(vim.fn.getreg('"'), '\n'), vim.fn.getregtype('"')} end,
+        ["*"] = function() return {vim.fn.split(vim.fn.getreg('"'), '\n'), vim.fn.getregtype('"')} end,
+      },
+    }
+  end
   return
 end
 
+-- 3. LOCAL MACHINE FALLBACKS
 if has("wl-copy") and has("wl-paste") then
   vim.g.clipboard = {
     name = "wl-clipboard",
@@ -418,7 +481,7 @@ end
 
 if has("xclip") then
   vim.g.clipboard = {
-    name = "xclip",
+    name = "xclip-local",
     copy = {
       ["+"] = "xclip -quiet -i -selection clipboard",
       ["*"] = "xclip -quiet -i -selection primary",
@@ -434,7 +497,7 @@ end
 
 if has("xsel") then
   vim.g.clipboard = {
-    name = "xsel",
+    name = "xsel-local",
     copy = {
       ["+"] = "xsel --clipboard --input",
       ["*"] = "xsel --primary --input",
@@ -473,17 +536,12 @@ vim.opt.signcolumn = "yes"
 vim.opt.updatetime = 50
 vim.opt.colorcolumn = "80"
 
--- Focus splits rules: Focus moves automatically to the newly generated window
-vim.opt.splitright = true
-vim.opt.splitbelow = true
-
 vim.opt.isfname:append("@-@")
 EOF
 
 write_file "$REMAPS_LUA" <<'EOF'
 local map = vim.keymap.set
 
--- Restored standard layout style behavior (No project sidebar plugin hacks)
 map("n", "<leader>pv", vim.cmd.Ex)
 
 map("v", "J", ":m '>+1<CR>gv=gv")
@@ -620,6 +678,15 @@ packer.startup(function(use)
 
   use({
     "nvim-treesitter/nvim-treesitter",
+    run = function()
+      local ok_install, install = pcall(
+        require,
+        "nvim-treesitter.install"
+      )
+      if ok_install then
+        install.update({ with_sync = true })()
+      end
+    end,
     config = function()
       local ok_ts, configs = pcall(require, "nvim-treesitter.configs")
       if not ok_ts then
@@ -627,7 +694,6 @@ packer.startup(function(use)
       end
 
       configs.setup({
-        -- Enforces synchronous installation upon user launch to bypass shell exceptions
         ensure_installed = {
           "bash",
           "c",
@@ -642,7 +708,6 @@ packer.startup(function(use)
           "vim",
           "vimdoc",
         },
-        sync_install = true,
         highlight = {
           enable = true,
         },
@@ -658,7 +723,9 @@ packer.startup(function(use)
         or vim.env.SSH_TTY
         or vim.env.MOSH_IP
 
-      if not is_remote then
+      -- Clean native setup handles clipboard context dynamically. 
+      -- The plugin fallback configuration only initializes for older Neovim releases (<0.10).
+      if not is_remote or vim.fn.has("nvim-0.10") == 1 then
         return
       end
 
@@ -670,28 +737,10 @@ packer.startup(function(use)
       pcall(function()
         osc52.setup({
           max_length = 0,
-          silent = false,
+          silent = true,
           trim = false,
         })
       end)
-
-      local group = vim.api.nvim_create_augroup("RemoteOsc52Yank", {
-        clear = true,
-      })
-
-      vim.api.nvim_create_autocmd("TextYankPost", {
-        group = group,
-        callback = function()
-          if vim.v.event.operator ~= "y" then
-            return
-          end
-
-          local reg = vim.v.event.regname
-          if reg == "+" or reg == "*" then
-            osc52.copy_register(reg)
-          end
-        end,
-      })
     end,
   })
 
@@ -725,7 +774,7 @@ packer.startup(function(use)
         "neovim/nvim-lspconfig",
         "hrsh7th/nvim-cmp",
         "hrsh7th/cmp-nvim-lsp",
-        { "L3MON4D3/LuaSnip", run = "make install_jsregexp" },
+        "L3MON4D3/LuaSnip",
       },
       config = function()
         local ok_lsp, lsp_zero = pcall(require, "lsp-zero")
@@ -764,6 +813,19 @@ packer.startup(function(use)
 end)
 EOF
 
+run_treesitter_update() {
+  echo_info "Updating Treesitter parsers..."
+
+  if ! "$BIN_DIR/nvim" --headless \
+    +'lua local ok, install = pcall(require, "nvim-treesitter.install"); if ok then install.update({ with_sync = true })() end' \
+    +qall
+  then
+    echo_error "Treesitter update failed. Open nvim and run :TSUpdate"
+  else
+    echo_ok "Treesitter parsers updated"
+  fi
+} 
+
 rm -f "$NVIM_CONFIG_DIR/plugin/packer_compiled.lua" 2>/dev/null || true
 
 if [[ ! -d "$PACKER_PATH" ]]; then
@@ -775,10 +837,7 @@ fi
 
 run_packer_sync 1
 run_packer_sync 2
-
-# Treesitter triggers compilation seamlessly on your first file open
-echo_info "Configured dynamic Treesitter initialization..."
-echo_ok "Treesitter setup verified"
+run_treesitter_update
 
 echo
 echo_ok "Installation finished!"
@@ -794,3 +853,4 @@ echo "  <leader>pv   -> file explorer"
 echo "  <leader>pf   -> Telescope find files"
 echo "  <leader>u    -> Undotree"
 echo "  <leader>gs   -> Fugitive git status"
+echo "  colorscheme  -> gruvbox"
